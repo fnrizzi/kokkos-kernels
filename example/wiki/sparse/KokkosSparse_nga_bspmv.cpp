@@ -10,6 +10,7 @@
 #include "KokkosKernels_Controls.hpp"
 #include "KokkosKernels_Test_Structured_Matrix.hpp"
 #include "KokkosKernels_Utils.hpp"
+#include "KokkosKernels_ExecSpaceUtils.hpp"
 
 #include <chrono>
 #include <type_traits>
@@ -33,20 +34,6 @@ using bcrs_matrix_t_ =
 typename KokkosSparse::Experimental::BlockCrsMatrix<Scalar, Ordinal, device_type, void,
     Offset>;
 
-template <class Yvector>
-struct check_spmv_functor {
-  Yvector y;
-  const Scalar SC_ONE = Kokkos::ArithTraits<Scalar>::one();
-
-  check_spmv_functor(Yvector y_) : y(y_){};
-
-  KOKKOS_INLINE_FUNCTION
-  void operator()(const int i, Ordinal& update) const {
-    if (y(i) != (SC_ONE + SC_ONE)) {
-      ++update;
-    }
-  }
-};
 
 namespace details {
 
@@ -104,7 +91,126 @@ crs_matrix_t_ generate_crs_matrix(const std::string stencil,
 }
 
 
-template <class AlphaType, class XVector, class BetaType, class YVector>
+//
+// spmv_beta_no_transpose: version for CPU execution spaces (RangePolicy or trivial serial impl used)
+//
+template <class AlphaType,
+    class XVector,
+    class BetaType,
+    class YVector,
+    typename std::enable_if<KokkosKernels::Impl::kk_is_gpu_exec_space<typename YVector::execution_space>()>::type* = nullptr
+>
+void
+spmv (const AlphaType& alpha,
+      const bcrs_matrix_t_& A,
+      const XVector& x,
+      const BetaType& beta,
+      YVector y)
+{
+  std::cerr << " GPU implementation is not complete !!! \n";
+  assert(0 > 1);
+  int vector_length = 1;
+  int max_vector_length = 1;
+#ifdef KOKKOS_ENABLE_CUDA
+  if(std::is_same<execution_space, Kokkos::Cuda>::value)
+    max_vector_length = 32;
+#endif
+#ifdef KOKKOS_ENABLE_HIP
+  if(std::is_same<execution_space, Kokkos::Experimental::HIP>::value)
+    max_vector_length = 64;
+#endif
+
+  ///
+  ///  Check spmv and Tpetra::BlockCrsMatrix
+  ///
+
+}
+
+template<class AMatrix,
+    class XVector,
+    class YVector,
+    int dobeta,
+    bool conjugate>
+struct BSPMV_Functor {
+  typedef typename AMatrix::execution_space execution_space;
+  typedef typename AMatrix::non_const_ordinal_type ordinal_type;
+  typedef typename AMatrix::non_const_value_type value_type;
+  typedef typename Kokkos::TeamPolicy<execution_space> team_policy;
+  typedef typename team_policy::member_type team_member;
+  typedef Kokkos::Details::ArithTraits<value_type> ATV;
+
+  const value_type alpha;
+  AMatrix m_A;
+  XVector m_x;
+  const value_type beta;
+  YVector m_y;
+
+  const ordinal_type rows_per_team;
+  const ordinal_type block_size;
+
+  BSPMV_Functor(const value_type alpha_, const AMatrix m_A_, const XVector m_x_,
+               const value_type beta_, const YVector m_y_,
+               const int rows_per_team_)
+      : alpha(alpha_),
+        m_A(m_A_),
+        m_x(m_x_),
+        beta(beta_),
+        m_y(m_y_),
+        rows_per_team(rows_per_team_),
+        block_size(m_A_.blockDim())
+  {
+  }
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(const ordinal_type iRowBlock) const {
+    using y_value_type = typename YVector::non_const_value_type;
+    if (iRowBlock >= m_A.numRows()) {
+      return;
+    }
+    const auto& A_graph  = m_A.graph;
+    const auto Ar = m_A.block_row_Const(iRowBlock);
+    const ordinal_type row_length = static_cast<ordinal_type>(Ar.length);
+    Kokkos::View< y_value_type*> sum("sum", block_size * block_size);
+    Kokkos::deep_copy(sum, 0);
+
+    const auto blkBeg = A_graph.row_map[iRowBlock];
+    const auto blkEnd = A_graph.row_map[iRowBlock + 1];
+    for (Ordinal iblk = blkBeg; iblk < blkEnd; ++iblk) {
+      const auto A_cur   = Ar.block(iblk - blkBeg);
+      const Ordinal xBlk = A_graph.entries[iblk];
+      const Ordinal xBeg = xBlk * block_size;
+      const Ordinal xEnd = xBeg + block_size;
+      const auto X_cur   = subview(m_x, Kokkos::make_pair(xBeg, xEnd));
+      KokkosBlas::gemv("N", alpha, A_cur, X_cur, alpha, sum);
+    }
+
+    auto Y_cur        = Kokkos::subview(
+        m_y, Kokkos::make_pair(iRowBlock * block_size, iRowBlock * block_size + block_size));
+
+    Kokkos::deep_copy(Y_cur, sum);
+
+/*
+    sum *= alpha;
+    if (dobeta == 0) {
+      m_y(iRow) = sum;
+    } else {
+      m_y(iRow) = beta * m_y(iRow) + sum;
+    }
+*/
+
+  }
+
+}; // struct BSPMV_Functor
+
+//
+// spmv_beta_no_transpose: version for CPU execution spaces (RangePolicy or trivial serial impl used)
+//
+template <class AlphaType,
+          class XVector,
+          class BetaType,
+          class YVector,
+          typename std::enable_if<!KokkosKernels::Impl::kk_is_gpu_exec_space<typename YVector::execution_space>()>::type* = nullptr
+          >
 void
 spmv (const AlphaType& alpha,
       const bcrs_matrix_t_& A,
@@ -146,26 +252,47 @@ spmv (const AlphaType& alpha,
   // Treat the case y <- alpha * A * x + beta * y
   //
 
-  //
-#if defined(KOKKOS_ENABLE_CUDA)
-  constexpr bool is_cuda = std::is_same<execution_space, Kokkos::Cuda>::value;
-#else
-  constexpr bool is_cuda = false;
-#endif // defined(KOKKOS_ENABLE_CUDA)
-
-  Ordinal blockSize = A.blockDim();
+  Ordinal blockSize    = A.blockDim();
   Ordinal numBlockRows = A.numRows();
+  for (Ordinal ijk = 0; ijk < numBlockRows * blockSize; ++ijk)
+    y_i(ijk) = 0.0;
 
-  /*
-  // Note on 03/24/20, lbv: We can use the controls
-  // here to allow the user to pass in some tunning
-  // parameters.
-  Kokkos::TeamPolicy<execution_space> policy(1,1);
+#if defined(KOKKOS_ENABLE_SERIAL)
+  if (std::is_same<execution_space, Kokkos::Serial>::value) {
+    std::cout << " RUN SERIAL \n";
+    //
+    ////// This is slower than sparse Mat-Vec
+    //
+    const auto& A_graph  = A.graph;
+    for (Ordinal row = 0; row < numBlockRows; ++row) {
+      auto Ar           = A.block_row_Const(row);
+      const auto blkBeg = A_graph.row_map[row];
+      const auto blkEnd = A_graph.row_map[row + 1];
+      auto Y_cur        = Kokkos::subview(
+          y_i, Kokkos::make_pair(row * blockSize, row * blockSize + blockSize));
+      for (Ordinal iblk = blkBeg; iblk < blkEnd; ++iblk) {
+        const auto A_cur   = Ar.block(iblk - blkBeg);
+        const Ordinal xBlk = A_graph.entries[iblk];
+        const Ordinal xBeg = xBlk * blockSize;
+        const Ordinal xEnd = xBeg + blockSize;
+        const auto X_cur   = subview(x_i, Kokkos::make_pair(xBeg, xEnd));
+        KokkosBlas::gemv("N", alpha, A_cur, X_cur, alpha, Y_cur);
+      }
+    }
+    return;
+  }
+#endif
 
-  if(controls.isParameter("team size"))       {team_size       = std::stoi(controls.getParameter("team size"));}
-  if(controls.isParameter("vector length"))   {vector_length   = std::stoi(controls.getParameter("vector length"));}
-  if(controls.isParameter("rows per thread")) {rows_per_thread = std::stoll(controls.getParameter("rows per thread"));}
+#ifdef KOKKOS_ENABLE_OPENMP
+  std::cout << " Run OPENMP case \n";
+  //
+  // This section terminates for the moment.
+  // terminate called recursively
+  //
+  const auto& A_graph      = A.graph;
+  const Ordinal blockSize2 = blockSize * blockSize;
 
+  KokkosKernels::Experimental::Controls controls;
   bool use_dynamic_schedule = false; // Forces the use of a dynamic schedule
   bool use_static_schedule  = false; // Forces the use of a static schedule
   if(controls.isParameter("schedule")) {
@@ -175,69 +302,21 @@ spmv (const AlphaType& alpha,
       use_static_schedule  = true;
     }
   }
-   */
-
   //
-  // Policy from Tpetra::BlockCrsMatrix
+  const int dobeta = 1;
+  const bool conjugate = false;
   //
-  /*
-  if (is_cuda) {
-    Ordinal team_size = 8, vector_size = 1;
-    if      (blockSize <= 5)  vector_size =  4;
-    else if (blockSize <= 9)  vector_size =  8;
-    else if (blockSize <= 12) vector_size = 12;
-    else if (blockSize <= 20) vector_size = 20;
-    else                      vector_size = 20;
-    policy = Kokkos::TeamPolicy<execution_space>(numBlockRows, team_size, vector_size);
-  } else {
-    policy = Kokkos::TeamPolicy<execution_space>(numBlockRows, 1, 1);
+  BSPMV_Functor<bcrs_matrix_t_,XVector,YVector,dobeta,conjugate>
+      func(alpha, A, x, beta, y, 1);
+  if (((A.nnz()>10000000) || use_dynamic_schedule) && !use_static_schedule) {
+    Kokkos::parallel_for("KokkosSparse::spmv<NoTranspose,Dynamic>",
+                         Kokkos::RangePolicy<execution_space, Kokkos::Schedule<Kokkos::Dynamic>>(0, A.numRows()),func);
   }
-   */
-
-  ///
-  ///   typedef Kokkos::View< value_type**, Kokkos::LayoutStride, typename MatrixType::device_type, Kokkos::MemoryUnmanaged > block_values_type;
-  ///
-
-  for (Ordinal ijk = 0; ijk < numBlockRows * blockSize; ++ijk)
-    y_i(ijk) = 0.0;
-
-    const Ordinal blockSize2 = blockSize * blockSize;
-  const auto &A_graph = A.graph;
-  //Kokkos::parallel_for(numBlockRows, KOKKOS_LAMBDA(Ordinal row){
-  for (Ordinal row = 0; row < numBlockRows; ++row) {
-    const auto Ar = A.block_row_Const(row);
-    const auto blkBeg = A_graph.row_map[row];
-    const auto blkEnd = A_graph.row_map[row + 1];
-    std::cout << " row " << row << " y " << row * blockSize
-        << " " << row * blockSize + blockSize
-        << " blk " << blkBeg << " " << blkEnd
-        << "\n";
-    auto Y_cur = Kokkos::subview(y_i, Kokkos::make_pair(row * blockSize,
-                                                row * blockSize + blockSize));
-    for (Ordinal ijk = 0; ijk < blockSize; ++ijk) {
-      std::cout << " y[" << ijk + row * blockSize << "] = " << Y_cur(ijk)
-                << "\n";
-    }
-    for (Ordinal iblk = blkBeg; iblk < blkEnd; ++iblk) {
-      const auto A_cur = Ar.block(iblk); // <- block_values_type
-      for (int ii = 0; ii < blockSize; ++ii) {
-        for (int jj = 0; jj < blockSize; ++jj)
-          std::cout << A_cur(ii, jj) << " ";
-        std::cout << "\n";
-      }
-      const Ordinal xBlk = A_graph.entries[iblk];
-      const Ordinal xBeg = xBlk * blockSize;
-      const Ordinal xEnd = xBeg + blockSize;
-      std::cout << " iblk " << iblk << " xBlk " << xBlk
-                << " xBeg " << xBeg << " " << xEnd << "\n";
-      const auto X_cur = subview(x_i, Kokkos::make_pair(xBeg, xEnd));
-      KokkosBlas::gemv("N", alpha, A_cur, X_cur, alpha, Y_cur);
-    }
-    for (Ordinal ijk = 0; ijk < blockSize; ++ijk) {
-      std::cout << "-> y[" << ijk + row * blockSize << "] = " << Y_cur(ijk)
-                << "\n";
-    }
+  else {
+    Kokkos::parallel_for("KokkosSparse::spmv<NoTranspose,Static>",
+                         Kokkos::RangePolicy<execution_space, Kokkos::Schedule<Kokkos::Static>>(0, A.numRows()),func);
   }
+#endif
 
 }
 
@@ -264,14 +343,14 @@ int main() {
     // one on the diagonal.
     Kokkos::View<Ordinal* [3], Kokkos::HostSpace> mat_structure(
         "Matrix Structure", 2);
-    mat_structure(0, 0) = 8;  // Request 10 grid point in 'x' direction
+    mat_structure(0, 0) = 32;  // Request 10 grid point in 'x' direction
     mat_structure(0, 1) = 0;   // Add BC to the left
     mat_structure(0, 2) = 0;   // Add BC to the right
-    mat_structure(1, 0) = 8;  // Request 10 grid point in 'y' direction
+    mat_structure(1, 0) = 32;  // Request 10 grid point in 'y' direction
     mat_structure(1, 1) = 0;   // Add BC to the bottom
     mat_structure(1, 2) = 0;   // Add BC to the top
 
-    const int repeat = 16, blockSize = 4;
+    const int repeat = 16, blockSize = 1;
     std::vector<int> mat_rowmap, mat_colidx;
     std::vector<double> mat_val;
 
@@ -318,14 +397,10 @@ int main() {
 
     double error = 0.0, maxNorm = 0.0;
     for (Ordinal ir = 0; ir < numRows; ++ir) {
-      std::cout << " yref " << yref(ir) << " y " << y(ir)
-                << " error " << error << " max " << maxNorm << "\n";
       error = std::max<double>(error, std::abs(yref(ir) - y(ir)));
       maxNorm = std::max<double>(maxNorm, std::abs(yref(ir)));
     }
     std::cout << " Error " << error << " maxNorm " << maxNorm << "\n";
-
-    exit(-1);
 
     //
     // Test speed of Mat-Vec product
