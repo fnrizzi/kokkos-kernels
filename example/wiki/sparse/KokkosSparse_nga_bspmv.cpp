@@ -92,7 +92,7 @@ crs_matrix_t_ generate_crs_matrix(const std::string stencil,
 
 
 //
-// spmv_beta_no_transpose: version for CPU execution spaces (RangePolicy or trivial serial impl used)
+// spmv_beta_no_transpose: version for GPU execution
 //
 template <class AlphaType,
     class XVector,
@@ -105,21 +105,10 @@ spmv (const AlphaType& alpha,
       const bcrs_matrix_t_& A,
       const XVector& x,
       const BetaType& beta,
-      YVector y)
+      YVector &y)
 {
   std::cerr << " GPU implementation is not complete !!! \n";
   assert(0 > 1);
-  int vector_length = 1;
-  int max_vector_length = 1;
-#ifdef KOKKOS_ENABLE_CUDA
-  if(std::is_same<execution_space, Kokkos::Cuda>::value)
-    max_vector_length = 32;
-#endif
-#ifdef KOKKOS_ENABLE_HIP
-  if(std::is_same<execution_space, Kokkos::Experimental::HIP>::value)
-    max_vector_length = 64;
-#endif
-
   ///
   ///  Check spmv and Tpetra::BlockCrsMatrix
   ///
@@ -148,6 +137,8 @@ struct BSPMV_Functor {
   const ordinal_type rows_per_team;
   const ordinal_type block_size;
 
+  using y_value_type = typename YVector::non_const_value_type;
+
   BSPMV_Functor(const value_type alpha_, const AMatrix m_A_, const XVector m_x_,
                const value_type beta_, const YVector m_y_,
                const int rows_per_team_)
@@ -163,41 +154,38 @@ struct BSPMV_Functor {
 
   KOKKOS_INLINE_FUNCTION
   void operator()(const ordinal_type iRowBlock) const {
-    using y_value_type = typename YVector::non_const_value_type;
     if (iRowBlock >= m_A.numRows()) {
       return;
     }
+    auto Avalues = &m_A.values[0];
     const auto& A_graph  = m_A.graph;
-    const auto Ar = m_A.block_row_Const(iRowBlock);
-    const ordinal_type row_length = static_cast<ordinal_type>(Ar.length);
-    Kokkos::View< y_value_type*> sum("sum", block_size * block_size);
-    Kokkos::deep_copy(sum, 0);
-
-    const auto blkBeg = A_graph.row_map[iRowBlock];
-    const auto blkEnd = A_graph.row_map[iRowBlock + 1];
-    for (Ordinal iblk = blkBeg; iblk < blkEnd; ++iblk) {
-      const auto A_cur   = Ar.block(iblk - blkBeg);
-      const Ordinal xBlk = A_graph.entries[iblk];
-      const Ordinal xBeg = xBlk * block_size;
-      const Ordinal xEnd = xBeg + block_size;
-      const auto X_cur   = subview(m_x, Kokkos::make_pair(xBeg, xEnd));
-      KokkosBlas::gemv("N", alpha, A_cur, X_cur, alpha, sum);
+    //
+    for (Ordinal ii = 0; ii < iRowBlock; ++ii)
+      Avalues += block_size * block_size * (A_graph.row_map[ii + 1] - A_graph.row_map[ii]);
+    //
+    std::vector<typename YVector::non_const_value_type> tmp(block_size, 0);
+    const auto jbeg = A_graph.row_map[iRowBlock];
+    const auto jend = A_graph.row_map[iRowBlock + 1];
+    const auto num_blocks = jend - jbeg;
+    for (Ordinal jb = 0; jb < num_blocks; ++jb) {
+      const auto col_block = A_graph.entries[jb + jbeg];
+      const auto x_val = &m_x[block_size * col_block];
+      for (Ordinal k_dof = 0; k_dof < block_size; ++k_dof) {
+        const auto A_row_values = &Avalues[jb * block_size +
+                                           k_dof * block_size * num_blocks];
+        for (Ordinal j_dof = 0; j_dof < block_size; ++j_dof) {
+          tmp[k_dof] += A_row_values[j_dof] * x_val[j_dof];
+        }
+      }
     }
-
-    auto Y_cur        = Kokkos::subview(
-        m_y, Kokkos::make_pair(iRowBlock * block_size, iRowBlock * block_size + block_size));
-
-    Kokkos::deep_copy(Y_cur, sum);
-
-/*
-    sum *= alpha;
-    if (dobeta == 0) {
-      m_y(iRow) = sum;
-    } else {
-      m_y(iRow) = beta * m_y(iRow) + sum;
+    Avalues += block_size * block_size * num_blocks;
+    //
+    // Need to generalize
+    //
+    for (Ordinal k_dof = 0; k_dof < block_size; ++k_dof) {
+      m_y[block_size * iRowBlock + k_dof] = alpha * tmp[k_dof];
     }
-*/
-
+    //
   }
 
 }; // struct BSPMV_Functor
@@ -216,7 +204,7 @@ spmv (const AlphaType& alpha,
       const bcrs_matrix_t_& A,
       const XVector& x,
       const BetaType& beta,
-      YVector y)
+      YVector &y)
 {
   typedef Kokkos::View<
       typename XVector::const_value_type*,
@@ -252,31 +240,140 @@ spmv (const AlphaType& alpha,
   // Treat the case y <- alpha * A * x + beta * y
   //
 
-  Ordinal blockSize    = A.blockDim();
-  Ordinal numBlockRows = A.numRows();
-  for (Ordinal ijk = 0; ijk < numBlockRows * blockSize; ++ijk)
-    y_i(ijk) = 0.0;
+  const Ordinal blockSize    = A.blockDim();
+  const Ordinal numBlockRows = A.numRows();
+  //
+  const int dobeta = 0;
+  const bool conjugate = false;
+  //
 
 #if defined(KOKKOS_ENABLE_SERIAL)
   if (std::is_same<execution_space, Kokkos::Serial>::value) {
-    std::cout << " RUN SERIAL \n";
     //
-    ////// This is slower than sparse Mat-Vec
+    const auto& A_graph = A.graph;
     //
-    const auto& A_graph  = A.graph;
-    for (Ordinal row = 0; row < numBlockRows; ++row) {
-      auto Ar           = A.block_row_Const(row);
-      const auto blkBeg = A_graph.row_map[row];
-      const auto blkEnd = A_graph.row_map[row + 1];
-      auto Y_cur        = Kokkos::subview(
-          y_i, Kokkos::make_pair(row * blockSize, row * blockSize + blockSize));
-      for (Ordinal iblk = blkBeg; iblk < blkEnd; ++iblk) {
-        const auto A_cur   = Ar.block(iblk - blkBeg);
-        const Ordinal xBlk = A_graph.entries[iblk];
-        const Ordinal xBeg = xBlk * blockSize;
-        const Ordinal xEnd = xBeg + blockSize;
-        const auto X_cur   = subview(x_i, Kokkos::make_pair(xBeg, xEnd));
-        KokkosBlas::gemv("N", alpha, A_cur, X_cur, alpha, Y_cur);
+    if (blockSize == 1) {
+      for (int i = 0; i < numBlockRows; ++i) {
+        const auto jbeg  = A_graph.row_map[i];
+        const auto jend  = A_graph.row_map[i + 1];
+        int j            = jbeg;
+        const auto jdist = jend - jbeg;
+        typename YVector::non_const_value_type tmp1 = 0;
+        for (int jj = 0; jj < jdist; ++jj) {
+          const AlphaType value1 = A.values[j];
+          const auto col_idx1    = A_graph.entries[j];
+          const auto x_val1      = x_i[col_idx1];
+          tmp1 += value1 * x_val1;
+          ++j;
+        }
+        //
+        // Need to generalize
+        //
+        y_i[i] = alpha * tmp1;
+      }
+    } else if (blockSize == 2) {
+      auto Avalues = &A.values[0];
+      for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
+        const auto jbeg = A_graph.row_map[iblock];
+        int j = jbeg;
+        const auto jend = A_graph.row_map[iblock + 1];
+        const auto num_blocks = jend - jbeg;
+        typename YVector::non_const_value_type tmp1 = 0, tmp2 = 0;
+        for (Ordinal jb = 0; jb < num_blocks; ++jb) {
+          const auto col_block = A_graph.entries[j];
+          const auto xval_ptr = &x_i[blockSize * col_block];
+          const auto x_val1 = xval_ptr[0], x_val2 = xval_ptr[1];
+          const AlphaType value1 = Avalues[jb * blockSize];
+          const AlphaType value2 = Avalues[jb * blockSize + 1];
+          tmp1 += value1 * x_val1 + value2 * x_val2;
+          const AlphaType value3 = Avalues[jb * blockSize + blockSize * num_blocks];
+          const AlphaType value4 = Avalues[jb * blockSize + blockSize * num_blocks + 1];
+          tmp2 += value3 * x_val1 + value4 * x_val2;
+          j += 1;
+        }
+        Avalues += blockSize * blockSize * num_blocks;
+        //
+        // Need to generalize
+        //
+        y_i[2 * iblock] = alpha * tmp1;
+        y_i[2 * iblock + 1] = alpha * tmp2;
+      }
+    } else if (blockSize == 3) {
+      auto Avalues = &A.values[0];
+      std::array< typename YVector::non_const_value_type, 3> tmp;
+      for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
+        const auto jbeg = A_graph.row_map[iblock];
+        int j = jbeg;
+        const auto jend = A_graph.row_map[iblock + 1];
+        const auto num_blocks = jend - jbeg;
+        //typename YVector::non_const_value_type tmp1 = 0, tmp2 = 0, tmp3 = 0;
+        tmp.fill(0);
+        for (Ordinal jb = 0; jb < num_blocks; ++jb) {
+          const auto col_block = A_graph.entries[j];
+          const auto xval_ptr = &x_i[blockSize * col_block];
+          const auto x_val1 = xval_ptr[0], x_val2 = xval_ptr[1], x_val3 = xval_ptr[2];
+          AlphaType value1 = Avalues[0 + jb * blockSize],
+                    value2 = Avalues[1 + jb * blockSize],
+                    value3 = Avalues[2 + jb * blockSize];
+          //tmp1 += value1 * x_val1 + value2 * x_val2 + value3 * x_val3;
+          tmp[0] += value1 * x_val1 + value2 * x_val2 + value3 * x_val3;
+          //
+          value1 = Avalues[0 + (jb + num_blocks) * blockSize],
+                value2 = Avalues[1 + (jb + num_blocks) * blockSize],
+                value3 = Avalues[2 + (jb + num_blocks) * blockSize];
+          //tmp2 += value1 * x_val1 + value2 * x_val2 + value3 * x_val3;
+          tmp[1] += value1 * x_val1 + value2 * x_val2 + value3 * x_val3;
+          //
+          value1 = Avalues[0 + (jb + 2 * num_blocks) * blockSize],
+                value2 = Avalues[1 + (jb + 2 * num_blocks) * blockSize],
+                value3 = Avalues[2 + (jb + 2 * num_blocks) * blockSize];
+          //tmp3 += value1 * x_val1 + value2 * x_val2 + value3 * x_val3;
+          tmp[2] += value1 * x_val1 + value2 * x_val2 + value3 * x_val3;
+          j += 1;
+        }
+        Avalues += blockSize * blockSize * num_blocks;
+        //
+        // Need to generalize
+        //
+        /*
+        y_i[3 * iblock] = alpha * tmp1;
+        y_i[3 * iblock + 1] = alpha * tmp2;
+        y_i[3 * iblock + 2] = alpha * tmp3;
+         */
+        y_i[3 * iblock] = alpha * tmp[0];
+        y_i[3 * iblock + 1] = alpha * tmp[1];
+        y_i[3 * iblock + 2] = alpha * tmp[2];
+        //
+      }
+    } else {
+      //
+      // This general section is slower
+      //
+      auto Avalues = &A.values[0];
+      std::vector<typename YVector::non_const_value_type> tmp(blockSize);
+      for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
+        const auto jbeg       = A_graph.row_map[iblock];
+        const auto jend       = A_graph.row_map[iblock + 1];
+        const auto num_blocks = jend - jbeg;
+        tmp.assign(blockSize, 0);
+        for (Ordinal jb = 0; jb < num_blocks; ++jb) {
+          const auto col_block = A_graph.entries[jb + jbeg];
+          const auto x_val = &x_i[blockSize * col_block];
+          for (Ordinal k_dof = 0; k_dof < blockSize; ++k_dof) {
+            const auto A_row_values = &Avalues[jb * blockSize +
+                                              k_dof * blockSize * num_blocks];
+            for (Ordinal j_dof = 0; j_dof < blockSize; ++j_dof) {
+              tmp[k_dof] += A_row_values[j_dof] * x_val[j_dof];
+            }
+          }
+        }
+        Avalues += blockSize * blockSize * num_blocks;
+        //
+        // Need to generalize
+        //
+        for (Ordinal k_dof = 0; k_dof < blockSize; ++k_dof) {
+          y_i[blockSize * iblock + k_dof] = alpha * tmp[k_dof];
+        }
       }
     }
     return;
@@ -284,7 +381,6 @@ spmv (const AlphaType& alpha,
 #endif
 
 #ifdef KOKKOS_ENABLE_OPENMP
-  std::cout << " Run OPENMP case \n";
   //
   // This section terminates for the moment.
   // terminate called recursively
@@ -302,9 +398,6 @@ spmv (const AlphaType& alpha,
       use_static_schedule  = true;
     }
   }
-  //
-  const int dobeta = 1;
-  const bool conjugate = false;
   //
   BSPMV_Functor<bcrs_matrix_t_,XVector,YVector,dobeta,conjugate>
       func(alpha, A, x, beta, y, 1);
@@ -343,80 +436,97 @@ int main() {
     // one on the diagonal.
     Kokkos::View<Ordinal* [3], Kokkos::HostSpace> mat_structure(
         "Matrix Structure", 2);
-    mat_structure(0, 0) = 32;  // Request 10 grid point in 'x' direction
+    mat_structure(0, 0) = 64;  // Request 10 grid point in 'x' direction
     mat_structure(0, 1) = 0;   // Add BC to the left
     mat_structure(0, 2) = 0;   // Add BC to the right
-    mat_structure(1, 0) = 32;  // Request 10 grid point in 'y' direction
+    mat_structure(1, 0) = 63;  // Request 10 grid point in 'y' direction
     mat_structure(1, 1) = 0;   // Add BC to the bottom
     mat_structure(1, 2) = 0;   // Add BC to the top
 
-    const int repeat = 16, blockSize = 1;
-    std::vector<int> mat_rowmap, mat_colidx;
-    std::vector<double> mat_val;
+    for (int blockSize = 1; blockSize <= 8; ++blockSize) {
 
-    crs_matrix_t_ myMatrix = details::generate_crs_matrix("FD", mat_structure,
-                                                          blockSize,
-                                                          mat_rowmap, mat_colidx,
-                                                          mat_val);
+      const int repeat = 16;
+      std::vector<int> mat_rowmap, mat_colidx;
+      std::vector<double> mat_val;
 
-    const Ordinal numRows = myMatrix.numRows();
+      crs_matrix_t_ myMatrix = details::generate_crs_matrix(
+          "FD", mat_structure, blockSize, mat_rowmap, mat_colidx, mat_val);
 
-    const Scalar alpha = SC_ONE;
-    const Scalar beta  = SC_ZERO;
+      const Ordinal numRows = myMatrix.numRows();
 
-    typename values_type::non_const_type x("lhs", numRows);
-    typename values_type::non_const_type y("rhs", numRows);
+      const Scalar alpha = SC_ONE;
+      const Scalar beta  = SC_ZERO;
 
-    auto tBegin = std::chrono::high_resolution_clock::now();
-    for (int ir = 0; ir < repeat; ++ir) {
-      Kokkos::deep_copy(x, SC_ONE);
-      KokkosSparse::spmv("N", alpha, myMatrix, x, beta, y);
-    }
-    auto tEnd = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> dt_crs = tEnd - tBegin;
+      typename values_type::non_const_type x("lhs", numRows);
+      typename values_type::non_const_type y("rhs", numRows);
 
-    std::cout << " Block Size " << blockSize << "\n";
-    std::cout << " Matrix Size " << numRows
-              << " nnz " << myMatrix.nnz() << "\n";
-    std::cout << " Total time for Crs Mat-Vec " << dt_crs.count()
-              << " Avg. " << dt_crs.count() / static_cast<double>(repeat)
-              << "\n";
+      auto tBegin = std::chrono::high_resolution_clock::now();
+      for (int ir = 0; ir < repeat; ++ir) {
+        Kokkos::deep_copy(x, SC_ONE);
+        KokkosSparse::spmv("N", alpha, myMatrix, x, beta, y);
+      }
+      auto tEnd = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<double> dt_crs = tEnd - tBegin;
 
-    //
-    // Use BlockCrsMatrix format
-    //
+      std::cout << " ======================== \n";
 
-    bcrs_matrix_t_ myBlockMatrix(myMatrix, blockSize);
+      std::cout << " Block Size " << blockSize << "\n";
+      std::cout << " Matrix Size " << numRows << " nnz " << myMatrix.nnz()
+                << "\n";
+      std::cout << " Total time for Crs Mat-Vec " << dt_crs.count() << " Avg. "
+                << dt_crs.count() / static_cast<double>(repeat) << "\n";
+      std::cout << " Flops (mult only) " << myMatrix.nnz() * repeat / dt_crs.count() << "\n";
+      std::cout << " ------------------------ \n";
 
-    typename values_type::non_const_type yref("ref", numRows);
-    for (Ordinal ir = 0; ir < numRows; ++ir)
-      x(ir) = std::rand() / static_cast<Scalar>(RAND_MAX);
+      //
+      // Use BlockCrsMatrix format
+      //
 
-    KokkosSparse::spmv("N", alpha, myMatrix, x, beta, yref);
-    details::spmv(alpha, myBlockMatrix, x, beta, y);
+      bcrs_matrix_t_ myBlockMatrix(myMatrix, blockSize);
 
-    double error = 0.0, maxNorm = 0.0;
-    for (Ordinal ir = 0; ir < numRows; ++ir) {
-      error = std::max<double>(error, std::abs(yref(ir) - y(ir)));
-      maxNorm = std::max<double>(maxNorm, std::abs(yref(ir)));
-    }
-    std::cout << " Error " << error << " maxNorm " << maxNorm << "\n";
+      typename values_type::non_const_type yref("ref", numRows);
+      for (Ordinal ir = 0; ir < numRows; ++ir)
+        x(ir) = std::rand() / static_cast<Scalar>(RAND_MAX);
 
-    //
-    // Test speed of Mat-Vec product
-    //
-
-    tBegin = std::chrono::high_resolution_clock::now();
-    for (int ir = 0; ir < repeat; ++ir) {
-      Kokkos::deep_copy(x, SC_ONE);
+      KokkosSparse::spmv("N", alpha, myMatrix, x, beta, yref);
       details::spmv(alpha, myBlockMatrix, x, beta, y);
-    }
-    tEnd = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> dt_bcrs = tEnd - tBegin;
-    std::cout << " Total time for BlockCrs Mat-Vec " << dt_bcrs.count()
-              << " Avg. " << dt_bcrs.count() / static_cast<double>(repeat)
-              << "\n";
 
+      double error = 0.0, maxNorm = 0.0;
+      for (Ordinal ir = 0; ir < numRows; ++ir) {
+        error   = std::max<double>(error, std::abs(yref(ir) - y(ir)));
+        maxNorm = std::max<double>(maxNorm, std::abs(yref(ir)));
+      }
+      std::cout << " Error BlockCrsMatrix " << error << " maxNorm " << maxNorm << "\n";
+
+      //
+
+      std::cout << " ------------------------ \n";
+      //
+      // Test speed of Mat-Vec product
+      //
+
+      tBegin = std::chrono::high_resolution_clock::now();
+      for (int ir = 0; ir < repeat; ++ir) {
+        Kokkos::deep_copy(x, SC_ONE);
+        details::spmv(alpha, myBlockMatrix, x, beta, y);
+      }
+      tEnd = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<double> dt_bcrs = tEnd - tBegin;
+      std::cout << " Total time for BlockCrs Mat-Vec " << dt_bcrs.count()
+                << " Avg. " << dt_bcrs.count() / static_cast<double>(repeat)
+                << "\n";
+      std::cout << " Ratio = " << dt_bcrs.count() / dt_crs.count();
+      if (dt_bcrs.count() < dt_crs.count()) {
+        std::cout << " --- GOOD --- ";
+      } else {
+        std::cout << " ((( Not Faster ))) ";
+      }
+      std::cout << " Flops (mult only) " << myMatrix.nnz() * repeat / dt_bcrs.count();
+      std::cout << "\n";
+
+      std::cout << " ======================== \n";
+
+    }
   }
 
   Kokkos::finalize();
