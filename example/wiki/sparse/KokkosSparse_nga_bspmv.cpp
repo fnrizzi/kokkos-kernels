@@ -702,6 +702,37 @@ int testRandom(const int repeat = 7500, const int minBlockSize = 1, const int ma
     return return_value;
 }
 
+int testSamples(const int repeat = 3000) {
+  int return_value = 0;
+
+  srand(17312837);
+
+  const std::vector<std::tuple<const char*, int> > SAMPLES{ // std::tuple(char* fileName, int blockSize)
+    std::make_tuple("GT01R.mtx", 5), // ID:2335	Fluorem	GT01R	7980	7980	430909	1	0	1	0	0.8811455350661695	9.457852263618717e-06	computational fluid dynamics problem	430909
+    std::make_tuple("raefsky4.mtx", 3), // ID:817	Simon	raefsky4	19779	19779	1316789	1	0	1	1	1	1	structural problem	1328611
+    std::make_tuple("bmw7st_1.mtx", 6), // ID:1253	GHS_psdef	bmw7st_1	141347	141347	7318399	1	0	1	1	1	1	structural problem	7339667
+    std::make_tuple("pwtk.mtx", 6), // ID:369	Boeing	pwtk	217918	217918	11524432	1	0	1	1	1	1	structural problem	11634424
+    std::make_tuple("RM07R.mtx", 7), // ID:2337	Fluorem	RM07R	381689	381689	37464962	1	0	1	0	0.9261667922354103	4.260681089287885e-06	computational fluid dynamics problem	37464962
+    std::make_tuple("audikw_1.mtx", 3) // ID:1252 GHS_psdef	audikw_1	943695	943695	77651847	1	0	1	1	1	1	structural problem	77651847
+  };
+
+  // Loop over sample matrix files
+  std::for_each(SAMPLES.begin(), SAMPLES.end(), [=](auto const& sample) {
+    const char* fileName = std::get<0>(sample);
+    const int blockSize = std::get<1>(sample);
+    crs_matrix_t_ myMatrix = KokkosKernels::Impl::read_kokkos_crst_matrix<crs_matrix_t_>(fileName);
+
+    std::cout << " ======================== \n";
+    std::cout << " Sample: '" << fileName << "', Block Size " << blockSize;
+    std::cout << " Matrix Size " << myMatrix.numCols() << " x " << myMatrix.numRows() << ", nnz " << myMatrix.nnz()
+              << "\n";
+
+    testMatrix(myMatrix, blockSize, repeat);
+
+  });
+  return return_value;
+}
+
 } // namespace details
 
 //#define TEST_RANDOM_BSPMV
@@ -710,7 +741,11 @@ int main() {
 
   Kokkos::initialize();
 
+#ifdef TEST_RANDOM_BSPMV
   int return_value = details::testRandom();
+#else
+  int return_value = details::testSamples();
+#endif
 
   Kokkos::finalize();
 
