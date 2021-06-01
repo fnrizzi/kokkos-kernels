@@ -35,6 +35,9 @@ typename KokkosSparse::Experimental::BlockCrsMatrix<Scalar, Ordinal, device_type
 
 namespace details {
 
+const Scalar SC_ONE = Kokkos::ArithTraits<Scalar>::one();
+const Scalar SC_ZERO = Kokkos::ArithTraits<Scalar>::zero();
+
 template <typename mat_structure>
 crs_matrix_t_ generate_crs_matrix(const std::string stencil,
                                 const mat_structure& structure,
@@ -537,17 +540,131 @@ spmv_row_gemv<8>(&A_graph.entries[jbeg], num_blocks, &Avalues[k_dof * len_blocks
 
 }
 
-} // namespace details
+typename values_type::non_const_type make_lhs(const int numRows) {
+  typename values_type::non_const_type x("lhs", numRows);
+  for (Ordinal ir = 0; ir < numRows; ++ir)
+    x(ir) = std::rand() / static_cast<Scalar>(RAND_MAX);
+  return x;
+}
 
-int main() {
 
-  Kokkos::initialize();
+template<typename mtx_t>
+std::chrono::duration<double> measure(const mtx_t &myMatrix, const Scalar alpha, const Scalar beta, const int repeat) {
+  const Ordinal numRows = myMatrix.numRows();
 
-  int return_value = 0;
+  auto const x = make_lhs(numRows);
+  typename values_type::non_const_type y("rhs", numRows);
 
-  {
-    const Scalar SC_ONE = Kokkos::ArithTraits<Scalar>::one();
-    const Scalar SC_ZERO = Kokkos::ArithTraits<Scalar>::zero();
+  auto tBegin = std::chrono::high_resolution_clock::now();
+  for (int ir = 0; ir < repeat; ++ir) {
+    KokkosSparse::spmv("N", alpha, myMatrix, x, beta, y);
+  }
+  auto tEnd = std::chrono::high_resolution_clock::now();
+
+  return tEnd - tBegin;
+}
+
+template<typename bmtx_t>
+std::chrono::duration<double> measureBlock(const bmtx_t &myBlockMatrix, const std::vector<Ordinal> &val_entries_ptr, const Scalar alpha, const Scalar beta, const int repeat) {
+  auto const numRows = myBlockMatrix.numRows() * myBlockMatrix.blockDim();
+  auto const x = make_lhs(numRows);
+  typename values_type::non_const_type y("rhs", numRows);
+
+  auto tBegin = std::chrono::high_resolution_clock::now();
+  for (int ir = 0; ir < repeat; ++ir) {
+    details::spmv(alpha, myBlockMatrix, x, beta, y, val_entries_ptr);
+  }
+  auto tEnd = std::chrono::high_resolution_clock::now();
+
+  return tEnd - tBegin;
+}
+
+template<typename mtx_t>
+std::vector<Ordinal> buildEntryValuePointers(const mtx_t &myBlockMatrix) {
+  // Build pointer to entry values
+  const Ordinal blockSize = myBlockMatrix.blockDim();
+  const Ordinal numBlocks = myBlockMatrix.numRows();
+  std::vector<Ordinal> val_entries_ptr(numBlocks + 1, 0);
+  for (Ordinal ir = 0; ir < numBlocks; ++ir) {
+    const auto jbeg = myBlockMatrix.graph.row_map[ir];
+    const auto jend = myBlockMatrix.graph.row_map[ir + 1];
+    val_entries_ptr[ir + 1] = val_entries_ptr[ir] + blockSize * blockSize * (jend - jbeg);
+  }
+  return val_entries_ptr;
+}
+
+template<typename mtx_t, typename bmtx_t>
+void compare(const mtx_t &myMatrix, const bmtx_t &myBlockMatrix, const std::vector<Ordinal> &val_entries_ptr, const Scalar alpha, const Scalar beta, double &error, double &maxNorm) {
+  error = 0.0;
+  maxNorm = 0.0;
+
+  const int numRows = myMatrix.numRows();
+  auto const x = make_lhs(numRows);
+  typename values_type::non_const_type y("rhs", numRows);
+  typename values_type::non_const_type yref("ref", numRows);
+
+  KokkosSparse::spmv("N", alpha, myMatrix, x, beta, yref);
+  details::spmv(alpha, myBlockMatrix, x, beta, y, val_entries_ptr);
+
+  for (Ordinal ir = 0, numRows = y.size(); ir < numRows; ++ir) {
+    //std::cout << '\t' << yref(ir) << '\t' << y(ir) << std::endl;
+    error   = std::max<double>(error, std::abs(yref(ir) - y(ir)));
+    maxNorm = std::max<double>(maxNorm, std::abs(yref(ir)));
+  }
+}
+
+template<typename mtx_t>
+void testMatrix(const mtx_t &myMatrix, const int blockSize, const int repeat) {
+
+  const Scalar alpha = details::SC_ONE;
+  const Scalar beta  = details::SC_ZERO;
+
+  auto const numRows = myMatrix.numRows();
+
+  std::chrono::duration<double> dt_crs = measure(myMatrix, alpha, beta, repeat);
+
+  std::cout << " Total time for Crs Mat-Vec " << dt_crs.count() << " Avg. "
+            << dt_crs.count() / static_cast<double>(repeat);
+  std::cout << " Flops (mult only) " << myMatrix.nnz() * static_cast<double>(repeat / dt_crs.count() ) << "\n";
+  std::cout << " ------------------------ \n";
+
+  //
+  // Use BlockCrsMatrix format
+  //
+  bcrs_matrix_t_ myBlockMatrix(myMatrix, blockSize);
+
+  auto const val_entries_ptr = buildEntryValuePointers(myBlockMatrix);
+
+  double error = 0.0, maxNorm = 0.0;
+  compare(myMatrix, myBlockMatrix, val_entries_ptr, alpha, beta, error, maxNorm);
+
+  std::cout << " Error BlockCrsMatrix " << error << " maxNorm " << maxNorm << "\n";
+  std::cout << " ------------------------ \n";
+
+  //
+  // Test speed of Mat-Vec product
+  //
+  std::chrono::duration<double> dt_bcrs = measureBlock(myBlockMatrix, val_entries_ptr, alpha, beta, repeat);
+
+  std::cout << " Total time for BlockCrs Mat-Vec " << dt_bcrs.count()
+            << " Avg. " << dt_bcrs.count() / static_cast<double>(repeat);
+  std::cout << " Flops (mult only) " << myMatrix.nnz() * static_cast<double>(repeat / dt_bcrs.count() );
+  std::cout << "\n";
+  //
+  std::cout << " Ratio = " << dt_bcrs.count() / dt_crs.count();
+
+  if (dt_bcrs.count() < dt_crs.count()) {
+    std::cout << " --- GOOD --- ";
+  } else {
+    std::cout << " ((( Not Faster ))) ";
+  }
+  std::cout << "\n";
+
+  std::cout << " ======================== \n";
+}
+
+int testRandom(const int repeat = 7500, const int minBlockSize = 1, const int maxBlockSize = 12) {
+    int return_value = 0;
 
     // The mat_structure view is used to generate a matrix using
     // finite difference (FD) or finite element (FE) discretization
@@ -566,8 +683,7 @@ int main() {
     mat_structure(1, 1) = 0;   // Add BC to the bottom
     mat_structure(1, 2) = 0;   // Add BC to the top
 
-    const int repeat = 7500;
-    for (int blockSize = 1; blockSize <= 12; ++blockSize) {
+    for (int blockSize = minBlockSize; blockSize <= maxBlockSize; ++blockSize) {
 
       std::vector<int> mat_rowmap, mat_colidx;
       std::vector<double> mat_val;
@@ -575,93 +691,26 @@ int main() {
       crs_matrix_t_ myMatrix = details::generate_crs_matrix(
           "FD", mat_structure, blockSize, mat_rowmap, mat_colidx, mat_val);
 
-      const Ordinal numRows = myMatrix.numRows();
-
-      const Scalar alpha = SC_ONE;
-      const Scalar beta  = SC_ZERO;
-
-      typename values_type::non_const_type x("lhs", numRows);
-      typename values_type::non_const_type y("rhs", numRows);
-
-      for (Ordinal ir = 0; ir < numRows; ++ir)
-        x(ir) = std::rand() / static_cast<Scalar>(RAND_MAX);
-      auto tBegin = std::chrono::high_resolution_clock::now();
-      for (int ir = 0; ir < repeat; ++ir) {
-        KokkosSparse::spmv("N", alpha, myMatrix, x, beta, y);
-      }
-      auto tEnd = std::chrono::high_resolution_clock::now();
-      std::chrono::duration<double> dt_crs = tEnd - tBegin;
-
       std::cout << " ======================== \n";
-
       std::cout << " Block Size " << blockSize;
-      std::cout << " Matrix Size " << numRows << " nnz " << myMatrix.nnz()
+      std::cout << " Matrix Size " << myMatrix.numRows() << " nnz " << myMatrix.nnz()
                 << "\n";
-      std::cout << " Total time for Crs Mat-Vec " << dt_crs.count() << " Avg. "
-                << dt_crs.count() / static_cast<double>(repeat);
-      std::cout << " Flops (mult only) " << myMatrix.nnz() * static_cast<double>(repeat / dt_crs.count() ) << "\n";
-      std::cout << " ------------------------ \n";
 
-      //
-      // Use BlockCrsMatrix format
-      //
-
-      bcrs_matrix_t_ myBlockMatrix(myMatrix, blockSize);
-
-      // Build pointer to entry values
-      const Ordinal numBlocks = numRows / blockSize;
-      std::vector< Ordinal > val_entries_ptr(numBlocks + 1, 0);
-      for (Ordinal ir = 0; ir < numBlocks; ++ir) {
-        const auto jbeg = myBlockMatrix.graph.row_map[ir];
-        const auto jend = myBlockMatrix.graph.row_map[ir + 1];
-        val_entries_ptr[ir + 1] = val_entries_ptr[ir] + blockSize * blockSize * (jend - jbeg);
-      }
-
-      typename values_type::non_const_type yref("ref", numRows);
-      for (Ordinal ir = 0; ir < numRows; ++ir)
-        x(ir) = std::rand() / static_cast<Scalar>(RAND_MAX);
-
-      KokkosSparse::spmv("N", alpha, myMatrix, x, beta, yref);
-      details::spmv(alpha, myBlockMatrix, x, beta, y, val_entries_ptr);
-
-      double error = 0.0, maxNorm = 0.0;
-      for (Ordinal ir = 0; ir < numRows; ++ir) {
-        error   = std::max<double>(error, std::abs(yref(ir) - y(ir)));
-        maxNorm = std::max<double>(maxNorm, std::abs(yref(ir)));
-      }
-      std::cout << " Error BlockCrsMatrix " << error << " maxNorm " << maxNorm << "\n";
-
-      std::cout << " ------------------------ \n";
-
-      //
-      // Test speed of Mat-Vec product
-      //
-
-      for (Ordinal ir = 0; ir < numRows; ++ir)
-        x(ir) = std::rand() / static_cast<Scalar>(RAND_MAX);
-      tBegin = std::chrono::high_resolution_clock::now();
-      for (int ir = 0; ir < repeat; ++ir) {
-        details::spmv(alpha, myBlockMatrix, x, beta, y, val_entries_ptr);
-      }
-      tEnd = std::chrono::high_resolution_clock::now();
-      std::chrono::duration<double> dt_bcrs = tEnd - tBegin;
-      std::cout << " Total time for BlockCrs Mat-Vec " << dt_bcrs.count()
-                << " Avg. " << dt_bcrs.count() / static_cast<double>(repeat);
-      std::cout << " Flops (mult only) " << myMatrix.nnz() * static_cast<double>(repeat / dt_bcrs.count() );
-      std::cout << "\n";
-      //
-      std::cout << " Ratio = " << dt_bcrs.count() / dt_crs.count();
-      if (dt_bcrs.count() < dt_crs.count()) {
-        std::cout << " --- GOOD --- ";
-      } else {
-        std::cout << " ((( Not Faster ))) ";
-      }
-      std::cout << "\n";
-
-      std::cout << " ======================== \n";
+      testMatrix(myMatrix, blockSize, repeat);
 
     }
-  }
+    return return_value;
+}
+
+} // namespace details
+
+//#define TEST_RANDOM_BSPMV
+
+int main() {
+
+  Kokkos::initialize();
+
+  int return_value = details::testRandom();
 
   Kokkos::finalize();
 
