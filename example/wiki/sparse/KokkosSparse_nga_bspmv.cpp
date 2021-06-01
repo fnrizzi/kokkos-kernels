@@ -489,48 +489,216 @@ spmv_row_gemv<8>(&A_graph.entries[jbeg], num_blocks, &Avalues[k_dof * len_blocks
   // This section terminates for the moment.
   // terminate called recursively
   //
-  const auto& A_graph      = A.graph;
+  const auto &A_graph      = A.graph;
   const Ordinal blockSize2 = blockSize * blockSize;
   //
   KokkosKernels::Experimental::Controls controls;
-  bool use_dynamic_schedule = false; // Forces the use of a dynamic schedule
-  bool use_static_schedule  = false; // Forces the use of a static schedule
-  if(controls.isParameter("schedule")) {
-    if(controls.getParameter("schedule") == "dynamic") {
+  bool use_dynamic_schedule = false;  // Forces the use of a dynamic schedule
+  bool use_static_schedule  = false;  // Forces the use of a static schedule
+  if (controls.isParameter("schedule")) {
+    if (controls.getParameter("schedule") == "dynamic") {
       use_dynamic_schedule = true;
-    } else if(controls.getParameter("schedule") == "static") {
-      use_static_schedule  = true;
+    } else if (controls.getParameter("schedule") == "static") {
+      use_static_schedule = true;
     }
   }
   //
+  if (blockSize <= 8) {
+    switch (blockSize) {
+      default:
+      case 1:
+      {
+        constexpr Ordinal unroll   = 1;
+        const Ordinal bs_unroll    = (blockSize / unroll);
 #pragma omp parallel for schedule(static)
-  for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-    const auto jbeg       = A_graph.row_map[iblock];
-    const auto jend       = A_graph.row_map[iblock + 1];
-    const auto num_blocks = jend - jbeg;
-    const auto Avalues    = &A.values[val_entries_ptr[iblock]];
-    std::vector<typename YVector::non_const_value_type> tmp(blockSize, 0);
-    const auto len_blocks = blockSize * num_blocks;
-    for (Ordinal jb = 0; jb < num_blocks; ++jb) {
-      const auto col_block = A_graph.entries[jb + jbeg];
-      const auto x_val = &x_i[blockSize * col_block];
-      auto A_row_k = Avalues + blockSize * jb;
-      for (Ordinal k_dof = 0; k_dof < blockSize; ++k_dof) {
-        double tmp_k = 0;
-        for (Ordinal j_dof = 0; j_dof < blockSize; ++j_dof) {
-          tmp_k += A_row_k[j_dof] * x_val[j_dof];
+        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
+          const auto jbeg       = A_graph.row_map[iblock];
+          const auto jend       = A_graph.row_map[iblock + 1];
+          const auto num_blocks = jend - jbeg;
+          auto Avalues          = &A.values[val_entries_ptr[iblock]];
+          const auto len_blocks = blockSize * num_blocks;
+          for (Ordinal kdist = 0, k_dof = 0; kdist < bs_unroll;
+          kdist += 1, k_dof += unroll) {
+            spmv_row_gemv<unroll>(&A_graph.entries[jbeg], num_blocks,
+                                  &Avalues[k_dof * len_blocks], len_blocks,
+                                  blockSize, &x_i[0],
+                                  &y_i[blockSize * iblock + k_dof]);
+          }
         }
-        tmp[k_dof] += tmp_k;
-        A_row_k = A_row_k + len_blocks;
+        break;
+      }
+      case 2:
+      {
+        constexpr Ordinal unroll   = 2;
+        const Ordinal bs_unroll    = (blockSize / unroll);
+#pragma omp parallel for schedule(static)
+        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
+          const auto jbeg       = A_graph.row_map[iblock];
+          const auto jend       = A_graph.row_map[iblock + 1];
+          const auto num_blocks = jend - jbeg;
+          auto Avalues          = &A.values[val_entries_ptr[iblock]];
+          const auto len_blocks = blockSize * num_blocks;
+          for (Ordinal kdist = 0, k_dof = 0; kdist < bs_unroll;
+          kdist += 1, k_dof += unroll) {
+            spmv_row_gemv<2>(&A_graph.entries[jbeg], num_blocks,
+                                  &Avalues[k_dof * len_blocks], len_blocks,
+                                  blockSize, &x_i[0],
+                                  &y_i[blockSize * iblock + k_dof]);
+          }
+        }
+        break;
+      }
+      case 3:
+      {
+        constexpr Ordinal unroll   = 3;
+        const Ordinal bs_unroll    = (blockSize / unroll);
+#pragma omp parallel for schedule(static)
+        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
+          const auto jbeg       = A_graph.row_map[iblock];
+          const auto jend       = A_graph.row_map[iblock + 1];
+          const auto num_blocks = jend - jbeg;
+          auto Avalues          = &A.values[val_entries_ptr[iblock]];
+          const auto len_blocks = blockSize * num_blocks;
+          for (Ordinal kdist = 0, k_dof = 0; kdist < bs_unroll;
+          kdist += 1, k_dof += unroll) {
+            spmv_row_gemv<3>(&A_graph.entries[jbeg], num_blocks,
+                                  &Avalues[k_dof * len_blocks], len_blocks,
+                                  blockSize, &x_i[0],
+                                  &y_i[blockSize * iblock + k_dof]);
+          }
+        }
+        break;
+      }
+      case 4: {
+        constexpr Ordinal unroll   = 4;
+        const Ordinal bs_unroll    = (blockSize / unroll);
+#pragma omp parallel for schedule(static)
+        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
+          const auto jbeg       = A_graph.row_map[iblock];
+          const auto jend       = A_graph.row_map[iblock + 1];
+          const auto num_blocks = jend - jbeg;
+          auto Avalues          = &A.values[val_entries_ptr[iblock]];
+          const auto len_blocks = blockSize * num_blocks;
+          for (Ordinal kdist = 0, k_dof = 0; kdist < bs_unroll;
+          kdist += 1, k_dof += unroll) {
+            spmv_row_gemv<4>(&A_graph.entries[jbeg], num_blocks,
+                                  &Avalues[k_dof * len_blocks], len_blocks,
+                                  blockSize, &x_i[0],
+                                  &y_i[blockSize * iblock + k_dof]);
+          }
+        }
+        break;
+      }
+      case 5:
+      {
+        constexpr Ordinal unroll   = 5;
+        const Ordinal bs_unroll    = (blockSize / unroll);
+#pragma omp parallel for schedule(static)
+        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
+          const auto jbeg       = A_graph.row_map[iblock];
+          const auto jend       = A_graph.row_map[iblock + 1];
+          const auto num_blocks = jend - jbeg;
+          auto Avalues          = &A.values[val_entries_ptr[iblock]];
+          const auto len_blocks = blockSize * num_blocks;
+          for (Ordinal kdist = 0, k_dof = 0; kdist < bs_unroll;
+          kdist += 1, k_dof += unroll) {
+            spmv_row_gemv<5>(&A_graph.entries[jbeg], num_blocks,
+                                  &Avalues[k_dof * len_blocks], len_blocks,
+                                  blockSize, &x_i[0],
+                                  &y_i[blockSize * iblock + k_dof]);
+          }
+        }
+        break;
+      }
+      case 6:
+      {
+        constexpr Ordinal unroll   = 6;
+        const Ordinal bs_unroll    = (blockSize / unroll);
+#pragma omp parallel for schedule(static)
+        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
+          const auto jbeg       = A_graph.row_map[iblock];
+          const auto jend       = A_graph.row_map[iblock + 1];
+          const auto num_blocks = jend - jbeg;
+          auto Avalues          = &A.values[val_entries_ptr[iblock]];
+          const auto len_blocks = blockSize * num_blocks;
+          for (Ordinal kdist = 0, k_dof = 0; kdist < bs_unroll;
+          kdist += 1, k_dof += unroll) {
+            spmv_row_gemv<6>(&A_graph.entries[jbeg], num_blocks,
+                                  &Avalues[k_dof * len_blocks], len_blocks,
+                                  blockSize, &x_i[0],
+                                  &y_i[blockSize * iblock + k_dof]);
+          }
+        }
+        break;
+      }
+      case 7:
+      {
+        constexpr Ordinal unroll   = 7;
+        const Ordinal bs_unroll    = (blockSize / unroll);
+#pragma omp parallel for schedule(static)
+        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
+          const auto jbeg       = A_graph.row_map[iblock];
+          const auto jend       = A_graph.row_map[iblock + 1];
+          const auto num_blocks = jend - jbeg;
+          auto Avalues          = &A.values[val_entries_ptr[iblock]];
+          const auto len_blocks = blockSize * num_blocks;
+          for (Ordinal kdist = 0, k_dof = 0; kdist < bs_unroll;
+          kdist += 1, k_dof += unroll) {
+            spmv_row_gemv<7>(&A_graph.entries[jbeg], num_blocks,
+                                  &Avalues[k_dof * len_blocks], len_blocks,
+                                  blockSize, &x_i[0],
+                                  &y_i[blockSize * iblock + k_dof]);
+          }
+        }
+        break;
+      }
+      case 8: {
+        constexpr Ordinal unroll   = 8;
+        const Ordinal bs_unroll    = (blockSize / unroll);
+#pragma omp parallel for schedule(static)
+        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
+          const auto jbeg       = A_graph.row_map[iblock];
+          const auto jend       = A_graph.row_map[iblock + 1];
+          const auto num_blocks = jend - jbeg;
+          auto Avalues          = &A.values[val_entries_ptr[iblock]];
+          const auto len_blocks = blockSize * num_blocks;
+          for (Ordinal kdist = 0, k_dof = 0; kdist < bs_unroll;
+               kdist += 1, k_dof += unroll) {
+            spmv_row_gemv<8>(&A_graph.entries[jbeg], num_blocks,
+                             &Avalues[k_dof * len_blocks], len_blocks,
+                             blockSize, &x_i[0],
+                             &y_i[blockSize * iblock + k_dof]);
+          }
+        }
+        break;
+      }
+    }
+  } else {
+#pragma omp parallel for schedule(static)
+    for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
+      const auto jbeg       = A_graph.row_map[iblock];
+      const auto jend       = A_graph.row_map[iblock + 1];
+      const auto num_blocks = jend - jbeg;
+      const auto Avalues    = &A.values[val_entries_ptr[iblock]];
+      std::vector<typename YVector::non_const_value_type> tmp(blockSize, 0);
+      const auto len_blocks = blockSize * num_blocks;
+      for (Ordinal jb = 0; jb < num_blocks; ++jb) {
+        const auto col_block = A_graph.entries[jb + jbeg];
+        const auto x_val     = &x_i[blockSize * col_block];
+        auto A_row_k         = Avalues + blockSize * jb;
+        for (Ordinal j_dof = 0; j_dof < blockSize; ++j_dof) {
+          const auto x_value_j = x_val[j_dof];
+          for (Ordinal k_dof = 0; k_dof < blockSize; ++k_dof) {
+            tmp[k_dof] += A_row_k[j_dof + k_dof * len_blocks] * x_value_j;
+          }
+        }
+        //
       }
       //
-    }
-    //
-    // Need to generalize
-    //
-    auto yvec = &y_i[blockSize * iblock];
-    for (Ordinal k_dof = 0; k_dof < blockSize; ++k_dof) {
-      yvec[k_dof] = alpha * tmp[k_dof];
+      auto yvec = &y_i[blockSize * iblock];
+      for (Ordinal k_dof = 0; k_dof < blockSize; ++k_dof) {
+        yvec[k_dof] = alpha * tmp[k_dof];
+      }
     }
   }
 #endif
