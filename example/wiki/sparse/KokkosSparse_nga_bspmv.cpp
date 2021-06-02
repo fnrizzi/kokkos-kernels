@@ -565,7 +565,7 @@ std::chrono::duration<double> measure(const mtx_t &myMatrix, const Scalar alpha,
 }
 
 template<typename bmtx_t>
-std::chrono::duration<double> measureBlock(const bmtx_t &myBlockMatrix, const std::vector<Ordinal> &val_entries_ptr, const Scalar alpha, const Scalar beta, const int repeat) {
+std::chrono::duration<double> measure_block(const bmtx_t &myBlockMatrix, const std::vector<Ordinal> &val_entries_ptr, const Scalar alpha, const Scalar beta, const int repeat) {
   auto const numRows = myBlockMatrix.numRows() * myBlockMatrix.blockDim();
   auto const x = make_lhs(numRows);
   typename values_type::non_const_type y("rhs", numRows);
@@ -580,7 +580,7 @@ std::chrono::duration<double> measureBlock(const bmtx_t &myBlockMatrix, const st
 }
 
 template<typename mtx_t>
-std::vector<Ordinal> buildEntryValuePointers(const mtx_t &myBlockMatrix) {
+std::vector<Ordinal> build_entry_ptr(const mtx_t &myBlockMatrix) {
   // Build pointer to entry values
   const Ordinal blockSize = myBlockMatrix.blockDim();
   const Ordinal numBlocks = myBlockMatrix.numRows();
@@ -702,7 +702,7 @@ bcrs_matrix_t_ to_block_crs_matrix(const crs_matrix_t_& mat_crs,
 }
 
 template<typename mtx_t>
-void testMatrix(const mtx_t &myMatrix, const int blockSize, const int repeat) {
+void test_matrix(const mtx_t &myMatrix, const int blockSize, const int repeat) {
 
   const Scalar alpha = details::SC_ONE;
   const Scalar beta  = details::SC_ZERO;
@@ -721,7 +721,7 @@ void testMatrix(const mtx_t &myMatrix, const int blockSize, const int repeat) {
   //
   bcrs_matrix_t_ myBlockMatrix = to_block_crs_matrix(myMatrix, blockSize);
 
-  auto const val_entries_ptr = buildEntryValuePointers(myBlockMatrix);
+  auto const val_entries_ptr = build_entry_ptr(myBlockMatrix);
 
   double error = 0.0, maxNorm = 0.0;
   compare(myMatrix, myBlockMatrix, val_entries_ptr, alpha, beta, error, maxNorm);
@@ -732,7 +732,7 @@ void testMatrix(const mtx_t &myMatrix, const int blockSize, const int repeat) {
   //
   // Test speed of Mat-Vec product
   //
-  std::chrono::duration<double> dt_bcrs = measureBlock(myBlockMatrix, val_entries_ptr, alpha, beta, repeat);
+  std::chrono::duration<double> dt_bcrs = measure_block(myBlockMatrix, val_entries_ptr, alpha, beta, repeat);
 
   std::cout << " Total time for BlockCrs Mat-Vec " << dt_bcrs.count()
             << " Avg. " << dt_bcrs.count() / static_cast<double>(repeat);
@@ -751,7 +751,7 @@ void testMatrix(const mtx_t &myMatrix, const int blockSize, const int repeat) {
   std::cout << " ======================== \n";
 }
 
-int testRandom(const int repeat = 7500, const int minBlockSize = 1, const int maxBlockSize = 12) {
+int test_random(const int repeat = 7500, const int minBlockSize = 1, const int maxBlockSize = 12) {
     int return_value = 0;
 
     // The mat_structure view is used to generate a matrix using
@@ -784,13 +784,13 @@ int testRandom(const int repeat = 7500, const int minBlockSize = 1, const int ma
       std::cout << " Matrix Size " << myMatrix.numRows() << " nnz " << myMatrix.nnz()
                 << "\n";
 
-      testMatrix(myMatrix, blockSize, repeat);
+      test_matrix(myMatrix, blockSize, repeat);
 
     }
     return return_value;
 }
 
-int testSamples(const int repeat = 3000) {
+int test_samples(const int repeat = 3000) {
   int return_value = 0;
 
   srand(17312837);
@@ -815,7 +815,7 @@ int testSamples(const int repeat = 3000) {
     std::cout << " Matrix Size " << myMatrix.numCols() << " x " << myMatrix.numRows() << ", nnz " << myMatrix.nnz()
               << "\n";
 
-    testMatrix(myMatrix, blockSize, repeat);
+    test_matrix(myMatrix, blockSize, repeat);
 
   });
   return return_value;
@@ -830,9 +830,9 @@ int main() {
   Kokkos::initialize();
 
 #ifdef TEST_RANDOM_BSPMV
-  int return_value = details::testRandom();
+  int return_value = details::test_random();
 #else
-  int return_value = details::testSamples();
+  int return_value = details::test_samples();
 #endif
 
   Kokkos::finalize();
