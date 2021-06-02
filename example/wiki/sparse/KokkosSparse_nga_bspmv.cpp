@@ -13,6 +13,7 @@
 #include "KokkosKernels_ExecSpaceUtils.hpp"
 
 #include <chrono>
+#include <set>
 #include <type_traits>
 
 using Scalar  = default_scalar;
@@ -210,7 +211,7 @@ spmv_serial_gemv(
   for (Ordinal ic = 0; ic < xrow; ++ic) {
     const auto xvalue = x_ptr[ic];
     for (Ordinal kr = 0; kr < M; ++kr) {
-      y[kr] += Aval_ptr[kr * lda] * xvalue;
+      y[kr] += Aval[ic + kr * lda] * xvalue;
     }
     Aval_ptr = Aval_ptr + 1;
   }
@@ -274,7 +275,6 @@ spmv_serial(const double alpha,
     const auto num_blocks = jend - jbeg;
     const auto Aval = Avalues + val_entries_ptr[iblock];
     tmp.fill(0);
-
     const auto lda = num_blocks * N;
     for (Ordinal jb = 0; jb < num_blocks; ++jb, ++j) {
       const auto col_block = Agraph.entries[j];
@@ -607,10 +607,98 @@ void compare(const mtx_t &myMatrix, const bmtx_t &myBlockMatrix, const std::vect
   details::spmv(alpha, myBlockMatrix, x, beta, y, val_entries_ptr);
 
   for (Ordinal ir = 0, numRows = y.size(); ir < numRows; ++ir) {
-    //std::cout << '\t' << yref(ir) << '\t' << y(ir) << std::endl;
+    /*
+    if (ir < 16) {
+      std::cout << '\t' << ir << '\t' << x(ir) << '\t' << yref(ir)
+      << '\t' << y(ir) << std::endl;
+    }
+    */
     error   = std::max<double>(error, std::abs(yref(ir) - y(ir)));
     maxNorm = std::max<double>(maxNorm, std::abs(yref(ir)));
   }
+}
+
+bcrs_matrix_t_ to_block_crs_matrix(const crs_matrix_t_& mat_crs,
+                                   const int blockSize)
+{
+  if (blockSize == 1) {
+    bcrs_matrix_t_ bmat(mat_crs, blockSize);
+    return bmat;
+  }
+
+  if ((mat_crs.numRows() % blockSize > 0) || (mat_crs.numCols() % blockSize > 0)) {
+    std::cerr << "\n !!! Matrix Dimensions Do Not Match Block Structure !!! \n\n";
+    exit(-123);
+  }
+
+  // block_rows will accumulate the number of blocks per row - this is NOT the row_map with cum sum!!
+  Ordinal nbrows = mat_crs.numRows() / blockSize;
+  std::vector<Ordinal> block_rows( nbrows, 0 );
+
+  Ordinal nbcols = mat_crs.numCols() / blockSize;
+
+  Ordinal numBlocks = 0;
+  for ( Ordinal i = 0; i < mat_crs.numRows(); i+=blockSize ) {
+    Ordinal current_blocks = 0;
+    for ( Ordinal j = 0; j < blockSize; ++j) {
+      auto n_entries = mat_crs.graph.row_map(i+1+j) - mat_crs.graph.row_map(i+j) + blockSize - 1;
+      current_blocks = std::max(current_blocks, n_entries / blockSize);
+    }
+    numBlocks += current_blocks; // cum sum
+    block_rows[ i/blockSize ] = current_blocks; // frequency counts
+  }
+
+  Kokkos::View<Ordinal*, Kokkos::LayoutLeft, device_type> rows("new_row", nbrows + 1);
+  rows(0) = 0;
+  for ( Ordinal i = 0; i < nbrows; ++i )
+    rows(i + 1) = rows(i) + block_rows[i];
+
+  Kokkos::View<Ordinal*, Kokkos::LayoutLeft, device_type> cols("new_col", rows[nbrows]);
+  cols(0) = 0;
+
+  for ( Ordinal ib = 0; ib < nbrows; ++ib ) {
+    auto ir_start = ib * blockSize;
+    auto ir_stop = (ib + 1) * blockSize;
+    std::set< Ordinal > col_set;
+    for (Ordinal ir = ir_start; ir < ir_stop; ++ir) {
+      for (Ordinal jk = mat_crs.graph.row_map(ir); jk < mat_crs.graph.row_map(ir+1); ++jk) {
+        col_set.insert(mat_crs.graph.entries(jk) / blockSize);
+      }
+    }
+    assert(col_set.size() == block_rows[ib]);
+    Ordinal icount = 0;
+    auto *col_list = &cols(rows(ib));
+    for (auto col_block : col_set)
+      col_list[icount++] = col_block;
+  }
+
+  Ordinal annz = numBlocks * blockSize * blockSize;
+  bcrs_matrix_t_::values_type vals("values", annz);
+  for (Ordinal i = 0; i < annz; ++i)
+    vals(i) = 0.0;
+
+  for ( Ordinal ir = 0; ir < mat_crs.numRows(); ++ir ) {
+    const auto iblock = ir / blockSize;
+    const auto ilocal = ir % blockSize;
+    Ordinal lda = blockSize * (rows[iblock + 1] - rows[iblock]);
+    for (Ordinal jk = mat_crs.graph.row_map(ir); jk < mat_crs.graph.row_map(ir+1); ++jk) {
+      const auto jc = mat_crs.graph.entries(jk);
+      const auto jblock = jc / blockSize;
+      const auto jlocal = jc % blockSize;
+      for (Ordinal jkb = rows[iblock]; jkb < rows[iblock + 1]; ++jkb) {
+        if (cols(jkb) == jblock) {
+          Ordinal shift = rows[iblock] * blockSize * blockSize
+                           + blockSize * (jkb - rows[iblock]);
+          vals(shift + jlocal + ilocal * lda) = mat_crs.values(jk);
+          break;
+        }
+      }
+    }
+  }
+
+  bcrs_matrix_t_ bmat("newblock", nbrows, nbcols, annz, vals, rows, cols, blockSize);
+  return bmat;
+
 }
 
 template<typename mtx_t>
@@ -631,7 +719,7 @@ void testMatrix(const mtx_t &myMatrix, const int blockSize, const int repeat) {
   //
   // Use BlockCrsMatrix format
   //
-  bcrs_matrix_t_ myBlockMatrix(myMatrix, blockSize);
+  bcrs_matrix_t_ myBlockMatrix = to_block_crs_matrix(myMatrix, blockSize);
 
   auto const val_entries_ptr = buildEntryValuePointers(myBlockMatrix);
 
@@ -708,19 +796,19 @@ int testSamples(const int repeat = 3000) {
   srand(17312837);
 
   const std::vector<std::tuple<const char*, int> > SAMPLES{ // std::tuple(char* fileName, int blockSize)
-    std::make_tuple("GT01R.mtx", 5), // ID:2335	Fluorem	GT01R	7980	7980	430909	1	0	1	0	0.8811455350661695	9.457852263618717e-06	computational fluid dynamics problem	430909
-    std::make_tuple("raefsky4.mtx", 3), // ID:817	Simon	raefsky4	19779	19779	1316789	1	0	1	1	1	1	structural problem	1328611
-    std::make_tuple("bmw7st_1.mtx", 6), // ID:1253	GHS_psdef	bmw7st_1	141347	141347	7318399	1	0	1	1	1	1	structural problem	7339667
-    std::make_tuple("pwtk.mtx", 6), // ID:369	Boeing	pwtk	217918	217918	11524432	1	0	1	1	1	1	structural problem	11634424
-    std::make_tuple("RM07R.mtx", 7), // ID:2337	Fluorem	RM07R	381689	381689	37464962	1	0	1	0	0.9261667922354103	4.260681089287885e-06	computational fluid dynamics problem	37464962
-    std::make_tuple("audikw_1.mtx", 3) // ID:1252 GHS_psdef	audikw_1	943695	943695	77651847	1	0	1	1	1	1	structural problem	77651847
+    std::make_tuple("GT01R.mtx", 5) // ID:2335	Fluorem	GT01R	7980	7980	430909	1	0	1	0	0.8811455350661695	9.457852263618717e-06	computational fluid dynamics problem	430909
+    , std::make_tuple("raefsky4.mtx", 3) // ID:817	Simon	raefsky4	19779	19779	1316789	1	0	1	1	1	1	structural problem	1328611
+//    , std::make_tuple("bmw7st_1.mtx", 6) // ID:1253	GHS_psdef	bmw7st_1	141347	141347	7318399	1	0	1	1	1	1	structural problem	7339667
+//    , std::make_tuple("pwtk.mtx", 6) // ID:369	Boeing	pwtk	217918	217918	11524432	1	0	1	1	1	1	structural problem	11634424
+    , std::make_tuple("RM07R.mtx", 7) // ID:2337	Fluorem	RM07R	381689	381689	37464962	1	0	1	0	0.9261667922354103	4.260681089287885e-06	computational fluid dynamics problem	37464962
+    , std::make_tuple("audikw_1.mtx", 3) // ID:1252 GHS_psdef	audikw_1	943695	943695	77651847	1	0	1	1	1	1	structural problem	77651847
   };
 
   // Loop over sample matrix files
   std::for_each(SAMPLES.begin(), SAMPLES.end(), [=](auto const& sample) {
     const char* fileName = std::get<0>(sample);
     const int blockSize = std::get<1>(sample);
-    crs_matrix_t_ myMatrix = KokkosKernels::Impl::read_kokkos_crst_matrix<crs_matrix_t_>(fileName);
+    auto myMatrix = KokkosKernels::Impl::read_kokkos_crst_matrix<crs_matrix_t_>(fileName);
 
     std::cout << " ======================== \n";
     std::cout << " Sample: '" << fileName << "', Block Size " << blockSize;
@@ -735,7 +823,7 @@ int testSamples(const int repeat = 3000) {
 
 } // namespace details
 
-//#define TEST_RANDOM_BSPMV
+#define TEST_RANDOM_BSPMV
 
 int main() {
 
