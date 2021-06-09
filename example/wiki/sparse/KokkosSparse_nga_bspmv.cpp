@@ -220,6 +220,10 @@ void spmv(const AlphaType &alpha, const bcrs_matrix_t_ &A, const XVector &x,
   ///
 }
 
+
+/////////////////////////////////////////////////////
+
+
 constexpr size_t bmax = 12;
 
 template <int M>
@@ -668,14 +672,15 @@ void spMatVec_no_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, cons
 
 
 template <int M>
-inline void spmv_transpose_serial_gemv(const Scalar alpha, Scalar *Aval,
+inline void spmv_transpose_gemv(const Scalar alpha, Scalar *Aval,
                                        const Ordinal lda,
                              const Ordinal xrow, const Scalar *x_ptr,
                              Scalar *y) {
   for (Ordinal ic = 0; ic < xrow; ++ic) {
     for (Ordinal kr = 0; kr < M; ++kr) {
       const auto alpha_value = alpha * Aval[ic + kr * lda];
-      y[ic] += alpha_value * x_ptr[kr];
+      Kokkos::atomic_add (&y[ic],
+                          static_cast<Scalar>(alpha_value * x_ptr[kr]));
     }
   }
 }
@@ -713,7 +718,7 @@ inline void spmv_transpose_serial(const Scalar alpha, Scalar *Avalues,
       auto yvec  = &y[N * col_block];
       auto Aval_ptr        = Aval + jb * N;
       //
-      spmv_transpose_serial_gemv<N>(alpha, Aval_ptr, lda, N, xval_ptr, yvec);
+      spmv_transpose_gemv<N>(alpha, Aval_ptr, lda, N, xval_ptr, yvec);
     }
   }
 }
@@ -777,7 +782,7 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
       //
       const auto &A_graph = A.graph;
       //
-      if (blockSize <= std::min<size_t>(12, details::bmax)) {
+      if (blockSize <= std::min<size_t>(8, details::bmax)) {
         switch (blockSize) {
           default:
           case 1:
@@ -886,7 +891,7 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
       }
     }
     //
-    if (blockSize <= std::min<size_t>(1, details::bmax)) {
+    if (blockSize <= std::min<size_t>(8, details::bmax)) {
       //
       // 2021/06/09 --- Cases for blockSize > 1 need to be modified
       //
@@ -908,25 +913,17 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
         case 2: {
 #pragma omp parallel for schedule(static)
           for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-            const auto jbeg       = A.graph.row_map[iblock];
-            int j                 = jbeg;
-            const auto jend       = A.graph.row_map[iblock + 1];
+            const auto jbeg       = A_graph.row_map[iblock];
+            const auto jend       = A_graph.row_map[iblock + 1];
             const auto num_blocks = jend - jbeg;
-            const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
-            std::array<Scalar, details::bmax> tmp;
-            tmp.fill(0);
-            for (Ordinal jb = 0; jb < num_blocks; ++jb, ++j) {
-              const auto col_block = A.graph.entries[j];
-              const auto xval_ptr  = &x[0] + blockSize * col_block;
-              const auto shift     = jb * blockSize * blockSize;
-              auto Aval_ptr        = Aval + shift;
-              //
-              spmv_serial_gemv<2>(Aval_ptr, blockSize, xval_ptr, tmp);
-            }
-            //
-            auto yvec = &y[iblock * blockSize];
-            for (Ordinal ii = 0; ii < 2; ++ii) {
-              yvec[ii] += alpha * tmp[ii];
+            const auto lda = num_blocks * blockSize;
+            const auto xval_ptr  = &x[iblock * blockSize];
+            const auto Aval = &A.values[0] + val_entries_ptr[iblock];
+            for (Ordinal jb = 0; jb < num_blocks; ++jb) {
+              const auto col_block = A.graph.entries[jb + jbeg];
+              auto yvec = &y[blockSize * col_block];
+              const auto Aval_ptr = Aval + jb * blockSize;
+              spmv_transpose_gemv<2>(alpha, Aval_ptr, lda, blockSize, xval_ptr, yvec);
             }
           }
           break;
@@ -934,25 +931,17 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
         case 3: {
 #pragma omp parallel for schedule(static)
           for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-            const auto jbeg       = A.graph.row_map[iblock];
-            int j                 = jbeg;
-            const auto jend       = A.graph.row_map[iblock + 1];
+            const auto jbeg       = A_graph.row_map[iblock];
+            const auto jend       = A_graph.row_map[iblock + 1];
             const auto num_blocks = jend - jbeg;
-            const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
-            std::array<Scalar, details::bmax> tmp;
-            tmp.fill(0);
-            for (Ordinal jb = 0; jb < num_blocks; ++jb, ++j) {
-              const auto col_block = A.graph.entries[j];
-              const auto xval_ptr  = &x[0] + blockSize * col_block;
-              const auto shift     = jb * blockSize * blockSize;
-              auto Aval_ptr        = Aval + shift;
-              //
-              spmv_serial_gemv<3>(Aval_ptr, blockSize, xval_ptr, tmp);
-            }
-            //
-            auto yvec = &y[iblock * blockSize];
-            for (Ordinal ii = 0; ii < 3; ++ii) {
-              yvec[ii] += alpha * tmp[ii];
+            const auto lda = num_blocks * blockSize;
+            const auto xval_ptr  = &x[iblock * blockSize];
+            const auto Aval = &A.values[0] + val_entries_ptr[iblock];
+            for (Ordinal jb = 0; jb < num_blocks; ++jb) {
+              const auto col_block = A.graph.entries[jb + jbeg];
+              auto yvec = &y[blockSize * col_block];
+              const auto Aval_ptr = Aval + jb * blockSize;
+              spmv_transpose_gemv<3>(alpha, Aval_ptr, lda, blockSize, xval_ptr, yvec);
             }
           }
           break;
@@ -960,25 +949,17 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
         case 4: {
 #pragma omp parallel for schedule(static)
           for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-            const auto jbeg       = A.graph.row_map[iblock];
-            int j                 = jbeg;
-            const auto jend       = A.graph.row_map[iblock + 1];
+            const auto jbeg       = A_graph.row_map[iblock];
+            const auto jend       = A_graph.row_map[iblock + 1];
             const auto num_blocks = jend - jbeg;
-            const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
-            std::array<Scalar, details::bmax> tmp;
-            tmp.fill(0);
-            for (Ordinal jb = 0; jb < num_blocks; ++jb, ++j) {
-              const auto col_block = A.graph.entries[j];
-              const auto xval_ptr  = &x[0] + blockSize * col_block;
-              const auto shift     = jb * blockSize * blockSize;
-              auto Aval_ptr        = Aval + shift;
-              //
-              spmv_serial_gemv<4>(Aval_ptr, blockSize, xval_ptr, tmp);
-            }
-            //
-            auto yvec = &y[iblock * blockSize];
-            for (Ordinal ii = 0; ii < 4; ++ii) {
-              yvec[ii] += alpha * tmp[ii];
+            const auto lda = num_blocks * blockSize;
+            const auto xval_ptr  = &x[iblock * blockSize];
+            const auto Aval = &A.values[0] + val_entries_ptr[iblock];
+            for (Ordinal jb = 0; jb < num_blocks; ++jb) {
+              const auto col_block = A.graph.entries[jb + jbeg];
+              auto yvec = &y[blockSize * col_block];
+              const auto Aval_ptr = Aval + jb * blockSize;
+              spmv_transpose_gemv<4>(alpha, Aval_ptr, lda, blockSize, xval_ptr, yvec);
             }
           }
           break;
@@ -986,25 +967,17 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
         case 5: {
 #pragma omp parallel for schedule(static)
           for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-            const auto jbeg       = A.graph.row_map[iblock];
-            int j                 = jbeg;
-            const auto jend       = A.graph.row_map[iblock + 1];
+            const auto jbeg       = A_graph.row_map[iblock];
+            const auto jend       = A_graph.row_map[iblock + 1];
             const auto num_blocks = jend - jbeg;
-            const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
-            std::array<Scalar, details::bmax> tmp;
-            tmp.fill(0);
-            for (Ordinal jb = 0; jb < num_blocks; ++jb, ++j) {
-              const auto col_block = A.graph.entries[j];
-              const auto xval_ptr  = &x[0] + blockSize * col_block;
-              const auto shift     = jb * blockSize * blockSize;
-              auto Aval_ptr        = Aval + shift;
-              //
-              spmv_serial_gemv<5>(Aval_ptr, blockSize, xval_ptr, tmp);
-            }
-            //
-            auto yvec = &y[iblock * blockSize];
-            for (Ordinal ii = 0; ii < 5; ++ii) {
-              yvec[ii] += alpha * tmp[ii];
+            const auto lda = num_blocks * blockSize;
+            const auto xval_ptr  = &x[iblock * blockSize];
+            const auto Aval = &A.values[0] + val_entries_ptr[iblock];
+            for (Ordinal jb = 0; jb < num_blocks; ++jb) {
+              const auto col_block = A.graph.entries[jb + jbeg];
+              auto yvec = &y[blockSize * col_block];
+              const auto Aval_ptr = Aval + jb * blockSize;
+              spmv_transpose_gemv<5>(alpha, Aval_ptr, lda, blockSize, xval_ptr, yvec);
             }
           }
           break;
@@ -1012,25 +985,17 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
         case 6: {
 #pragma omp parallel for schedule(static)
           for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-            const auto jbeg       = A.graph.row_map[iblock];
-            int j                 = jbeg;
-            const auto jend       = A.graph.row_map[iblock + 1];
+            const auto jbeg       = A_graph.row_map[iblock];
+            const auto jend       = A_graph.row_map[iblock + 1];
             const auto num_blocks = jend - jbeg;
-            const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
-            std::array<Scalar, details::bmax> tmp;
-            tmp.fill(0);
-            for (Ordinal jb = 0; jb < num_blocks; ++jb, ++j) {
-              const auto col_block = A.graph.entries[j];
-              const auto xval_ptr  = &x[0] + blockSize * col_block;
-              const auto shift     = jb * blockSize * blockSize;
-              auto Aval_ptr        = Aval + shift;
-              //
-              spmv_serial_gemv<6>(Aval_ptr, blockSize, xval_ptr, tmp);
-            }
-            //
-            auto yvec = &y[iblock * blockSize];
-            for (Ordinal ii = 0; ii < 6; ++ii) {
-              yvec[ii] += alpha * tmp[ii];
+            const auto lda = num_blocks * blockSize;
+            const auto xval_ptr  = &x[iblock * blockSize];
+            const auto Aval = &A.values[0] + val_entries_ptr[iblock];
+            for (Ordinal jb = 0; jb < num_blocks; ++jb) {
+              const auto col_block = A.graph.entries[jb + jbeg];
+              auto yvec = &y[blockSize * col_block];
+              const auto Aval_ptr = Aval + jb * blockSize;
+              spmv_transpose_gemv<6>(alpha, Aval_ptr, lda, blockSize, xval_ptr, yvec);
             }
           }
           break;
@@ -1038,25 +1003,17 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
         case 7: {
 #pragma omp parallel for schedule(static)
           for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-            const auto jbeg       = A.graph.row_map[iblock];
-            int j                 = jbeg;
-            const auto jend       = A.graph.row_map[iblock + 1];
+            const auto jbeg       = A_graph.row_map[iblock];
+            const auto jend       = A_graph.row_map[iblock + 1];
             const auto num_blocks = jend - jbeg;
-            const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
-            std::array<Scalar, details::bmax> tmp;
-            tmp.fill(0);
-            for (Ordinal jb = 0; jb < num_blocks; ++jb, ++j) {
-              const auto col_block = A.graph.entries[j];
-              const auto xval_ptr  = &x[0] + blockSize * col_block;
-              const auto shift     = jb * blockSize * blockSize;
-              auto Aval_ptr        = Aval + shift;
-              //
-              spmv_serial_gemv<7>(Aval_ptr, blockSize, xval_ptr, tmp);
-            }
-            //
-            auto yvec = &y[iblock * blockSize];
-            for (Ordinal ii = 0; ii < 7; ++ii) {
-              yvec[ii] += alpha * tmp[ii];
+            const auto lda = num_blocks * blockSize;
+            const auto xval_ptr  = &x[iblock * blockSize];
+            const auto Aval = &A.values[0] + val_entries_ptr[iblock];
+            for (Ordinal jb = 0; jb < num_blocks; ++jb) {
+              const auto col_block = A.graph.entries[jb + jbeg];
+              auto yvec = &y[blockSize * col_block];
+              const auto Aval_ptr = Aval + jb * blockSize;
+              spmv_transpose_gemv<7>(alpha, Aval_ptr, lda, blockSize, xval_ptr, yvec);
             }
           }
           break;
@@ -1064,25 +1021,17 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
         case 8: {
 #pragma omp parallel for schedule(static)
           for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-            const auto jbeg       = A.graph.row_map[iblock];
-            int j                 = jbeg;
-            const auto jend       = A.graph.row_map[iblock + 1];
+            const auto jbeg       = A_graph.row_map[iblock];
+            const auto jend       = A_graph.row_map[iblock + 1];
             const auto num_blocks = jend - jbeg;
-            const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
-            std::array<Scalar, details::bmax> tmp;
-            tmp.fill(0);
-            for (Ordinal jb = 0; jb < num_blocks; ++jb, ++j) {
-              const auto col_block = A.graph.entries[j];
-              const auto xval_ptr  = &x[0] + blockSize * col_block;
-              const auto shift     = jb * blockSize * blockSize;
-              auto Aval_ptr        = Aval + shift;
-              //
-              spmv_serial_gemv<8>(Aval_ptr, blockSize, xval_ptr, tmp);
-            }
-            //
-            auto yvec = &y[iblock * blockSize];
-            for (Ordinal ii = 0; ii < 8; ++ii) {
-              yvec[ii] += alpha * tmp[ii];
+            const auto lda = num_blocks * blockSize;
+            const auto xval_ptr  = &x[iblock * blockSize];
+            const auto Aval = &A.values[0] + val_entries_ptr[iblock];
+            for (Ordinal jb = 0; jb < num_blocks; ++jb) {
+              const auto col_block = A.graph.entries[jb + jbeg];
+              auto yvec = &y[blockSize * col_block];
+              const auto Aval_ptr = Aval + jb * blockSize;
+              spmv_transpose_gemv<8>(alpha, Aval_ptr, lda, blockSize, xval_ptr, yvec);
             }
           }
           break;
