@@ -323,11 +323,6 @@ void spMatVec_no_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, cons
     else
       KokkosBlas::scal(y_i, beta, y_i);
 
-    if (alpha == Kokkos::ArithTraits<AlphaType>::zero() || A.numRows() == 0 ||
-        A.numCols() == 0 || A.nnz() == 0 || A.blockDim() == 0) {
-      return;
-    }
-
     //
     // Treat the case y <- alpha * A * x + beta * y
     //
@@ -762,11 +757,6 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
   else
     KokkosBlas::scal(y_i, beta, y_i);
 
-  if (alpha == Kokkos::ArithTraits<AlphaType>::zero() || A.numRows() == 0 ||
-      A.numCols() == 0 || A.nnz() == 0 || A.blockDim() == 0) {
-    return;
-  }
-
   //
   // Treat the case y <- alpha * A^T * x + beta * y
   //
@@ -1146,6 +1136,22 @@ void spmv(KokkosKernels::Experimental::Controls controls,
           const YVector& Y) {
   //
   details::verifyArguments(mode, A, X, Y);
+  //
+  if(alpha == Kokkos::ArithTraits<AlphaType>::zero() ||
+      A.numRows() == 0 || A.numCols() == 0 || A.nnz() == 0)
+  {
+    //This is required to maintain semantics of KokkosKernels native SpMV:
+    //if y contains NaN but beta = 0, the result y should be filled with 0.
+    //For example, this is useful for passing in uninitialized y and beta=0.
+    if(beta == Kokkos::ArithTraits<BetaType>::zero())
+      Kokkos::deep_copy(Y, Kokkos::ArithTraits<BetaType>::zero());
+    else
+      KokkosBlas::scal(Y, beta, Y);
+    return;
+  }
+  //
+  //Whether to call KokkosKernel's native implementation, even if a TPL impl is available
+  bool useFallback = controls.isParameter("algorithm") && controls.getParameter("algorithm") == "native";
   //
   if (X.extent(1) == 1) {
     if (mode[0] == KokkosSparse::NoTranspose[0]) {
