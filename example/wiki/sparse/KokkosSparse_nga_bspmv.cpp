@@ -1451,7 +1451,7 @@ int test_samples(const int repeat = 3000) {
                            // 1	0	0.8811455350661695	9.457852263618717e-06
                            // computational fluid dynamics problem	430909
       ,
-      std::make_tuple("raefsky4.mtx", 3)  // ID:817	Simon	raefsky4	19779
+      //std::make_tuple("raefsky4.mtx", 3)  // ID:817	Simon	raefsky4	19779
                                           // 19779	1316789	1	0	1	1	1
                                           // 1	structural problem	1328611
       //    , std::make_tuple("bmw7st_1.mtx", 6) // ID:1253	GHS_psdef
@@ -1460,13 +1460,13 @@ int test_samples(const int repeat = 3000) {
       //    , std::make_tuple("pwtk.mtx", 6) // ID:369	Boeing	pwtk 217918
       //    217918	11524432	1	0	1	1	1	1	structural
       //    problem	11634424
-      ,
-      std::make_tuple("RM07R.mtx",
-                      7)  // ID:2337	Fluorem	RM07R	381689	381689 37464962
+      //,
+      //std::make_tuple("RM07R.mtx",
+      //                7)  // ID:2337	Fluorem	RM07R	381689	381689 37464962
                           // 1	0	1	0
                           // 0.9261667922354103	4.260681089287885e-06
                           // computational fluid dynamics problem	37464962
-      ,
+      //,
       std::make_tuple("audikw_1.mtx",
                       3)  // ID:1252 GHS_psdef	audikw_1	943695	943695
                           // 77651847	1	0	1	1	1	1	structural
