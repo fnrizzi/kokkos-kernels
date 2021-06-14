@@ -397,25 +397,26 @@ void spMatVec_no_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, cons
       // --- Basic approach for large block sizes
       //
       const Ordinal blockSize_squared = blockSize * blockSize;
-      auto Aval = &A.values[0];
+      auto Aval = &A.values[0], yvec = &y[0];
       for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
         const auto jbeg       = A_graph.row_map[iblock];
         const auto jend       = A_graph.row_map[iblock + 1];
         const auto num_blocks = jend - jbeg;
-        auto yvec             = &y[iblock * blockSize];
         const auto lda = num_blocks * blockSize;
-        for (Ordinal jb = 0; jb < num_blocks; ++jb) {
+        //
+        for (Ordinal jb = 0, shifta = 0; jb < num_blocks; ++jb, shifta += blockSize) {
           const auto col_block = A_graph.entries[jb + jbeg];
           const auto xval_ptr  = &x[0] + blockSize * col_block;
-          const auto Aval_ptr = Aval + jb * blockSize;
-          for (Ordinal ic = 0; ic < blockSize; ++ic) {
-            const auto xvalue = xval_ptr[ic];
-            for (Ordinal kr = 0; kr < blockSize; ++kr) {
-              yvec[kr] += Aval_ptr[ic + kr * lda] * xvalue;
+          const auto Aval_ptr = Aval + shifta;
+          for (Ordinal kr = 0; kr < blockSize; ++kr) {
+            for (Ordinal ic = 0; ic < blockSize; ++ic) {
+              yvec[kr] += Aval_ptr[ic + kr * lda] * xval_ptr[ic];
             }
           }
         }
-        Aval = Aval + num_blocks * blockSize_squared;
+        //
+        Aval = Aval + lda * blockSize;
+        yvec = yvec + blockSize;
       }
       return;
     }
@@ -1400,7 +1401,7 @@ void test_matrix(const mtx_t &myMatrix, const int blockSize, const int repeat) {
 
 }
 
-int test_random(const int repeat = 1024, const int minBlockSize = 1,
+int test_random(const int repeat = 1024, const int minBlockSize = 9,
                 const int maxBlockSize = 12) {
   int return_value = 0;
 
