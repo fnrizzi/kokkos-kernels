@@ -211,8 +211,8 @@ template <class AlphaType, class XVector, class BetaType, class YVector,
           typename std::enable_if<KokkosKernels::Impl::kk_is_gpu_exec_space<
               typename YVector::execution_space>()>::type * = nullptr>
 void spmv(const AlphaType &alpha, const bcrs_matrix_t_ &A, const XVector &x,
-          const BetaType &beta, YVector &y,
-          const std::vector<Ordinal> &val_entries_ptr) {
+          const BetaType &beta, YVector &y)
+{
   std::cerr << " GPU implementation is not complete !!! \n";
   assert(0 > 1);
   ///
@@ -294,8 +294,8 @@ template <class AlphaType, class XVector, class BetaType, class YVector,
           typename std::enable_if<!KokkosKernels::Impl::kk_is_gpu_exec_space<
               typename YVector::execution_space>()>::type * = nullptr>
 void spMatVec_no_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const XVector &x,
-          const BetaType &beta, YVector &y,
-          const std::vector<Ordinal> &val_entries_ptr) {
+          const BetaType &beta, YVector &y)
+{
 
     typedef Kokkos::View<
         typename XVector::const_value_type *,
@@ -468,7 +468,7 @@ void spMatVec_no_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, cons
             const auto jend       = A.graph.row_map[iblock + 1];
             const auto num_blocks = jend - jbeg;
             const auto lda = blockSize * num_blocks;
-            const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
+            const auto Aval       = &A.values[blockSize2 * jbeg];
             std::array<Scalar, details::bmax> tmp;
             tmp.fill(0);
             for (Ordinal jb = 0; jb < num_blocks; ++jb, ++j) {
@@ -494,7 +494,7 @@ void spMatVec_no_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, cons
             const auto jend       = A.graph.row_map[iblock + 1];
             const auto num_blocks = jend - jbeg;
             const auto lda = blockSize * num_blocks;
-            const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
+            const auto Aval       = &A.values[blockSize2 * jbeg];
             std::array<Scalar, details::bmax> tmp;
             tmp.fill(0);
             for (Ordinal jb = 0; jb < num_blocks; ++jb, ++j) {
@@ -520,7 +520,7 @@ void spMatVec_no_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, cons
             const auto jend       = A.graph.row_map[iblock + 1];
             const auto num_blocks = jend - jbeg;
             const auto lda = blockSize * num_blocks;
-            const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
+            const auto Aval       = &A.values[blockSize2 * jbeg];
             std::array<Scalar, details::bmax> tmp;
             tmp.fill(0);
             for (Ordinal jb = 0; jb < num_blocks; ++jb, ++j) {
@@ -546,7 +546,7 @@ void spMatVec_no_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, cons
             const auto jend       = A.graph.row_map[iblock + 1];
             const auto num_blocks = jend - jbeg;
             const auto lda = blockSize * num_blocks;
-            const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
+            const auto Aval       = &A.values[blockSize2 * jbeg];
             std::array<Scalar, details::bmax> tmp;
             tmp.fill(0);
             for (Ordinal jb = 0; jb < num_blocks; ++jb, ++j) {
@@ -572,7 +572,7 @@ void spMatVec_no_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, cons
             const auto jend       = A.graph.row_map[iblock + 1];
             const auto num_blocks = jend - jbeg;
             const auto lda = blockSize * num_blocks;
-            const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
+            const auto Aval       = &A.values[blockSize2 * jbeg];
             std::array<Scalar, details::bmax> tmp;
             tmp.fill(0);
             for (Ordinal jb = 0; jb < num_blocks; ++jb, ++j) {
@@ -598,7 +598,7 @@ void spMatVec_no_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, cons
             const auto jend       = A.graph.row_map[iblock + 1];
             const auto num_blocks = jend - jbeg;
             const auto lda = blockSize * num_blocks;
-            const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
+            const auto Aval       = &A.values[blockSize2 * jbeg];
             std::array<Scalar, details::bmax> tmp;
             tmp.fill(0);
             for (Ordinal jb = 0; jb < num_blocks; ++jb, ++j) {
@@ -624,7 +624,7 @@ void spMatVec_no_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, cons
             const auto jend       = A.graph.row_map[iblock + 1];
             const auto num_blocks = jend - jbeg;
             const auto lda = blockSize * num_blocks;
-            const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
+            const auto Aval       = &A.values[blockSize2 * jbeg];
             std::array<Scalar, details::bmax> tmp;
             tmp.fill(0);
             for (Ordinal jb = 0; jb < num_blocks; ++jb, ++j) {
@@ -650,7 +650,7 @@ void spMatVec_no_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, cons
         const auto jend       = A.graph.row_map[iblock + 1];
         const auto num_blocks = jend - jbeg;
         const auto lda = blockSize * num_blocks;
-        const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
+        const auto Aval       = &A.values[blockSize2 * jbeg];
         auto yvec             = &y[iblock * blockSize];
         for (Ordinal jb = 0; jb < num_blocks; ++jb) {
           const auto col_block = A.graph.entries[jb + jbeg];
@@ -688,7 +688,7 @@ inline void spmv_transpose_gemv(const Scalar alpha, Scalar *Aval,
 
 template <class StaticGraph, int N>
 inline void spmv_transpose_serial(const Scalar alpha, Scalar *Avalues,
-                        const StaticGraph &Agraph, const int *val_entries_ptr,
+                        const StaticGraph &Agraph,
                         const Scalar *x, Scalar *y, const Ordinal ldy) {
 
   const Ordinal numBlockRows = Agraph.numRows();
@@ -706,12 +706,13 @@ inline void spmv_transpose_serial(const Scalar alpha, Scalar *Avalues,
     return;
   }
 
+  const auto blockSize2 = N * N;
   for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
     const auto jbeg       = Agraph.row_map[iblock];
     const auto jend       = Agraph.row_map[iblock + 1];
     const auto num_blocks = jend - jbeg;
     const auto lda = num_blocks * N;
-    const auto Aval       = Avalues + val_entries_ptr[iblock];
+    const auto Aval       = &Avalues[blockSize2 * jbeg];
     const auto xval_ptr = &x[iblock * N];
     for (Ordinal jb = 0; jb < num_blocks; ++jb) {
       const auto col_block = Agraph.entries[jb + jbeg];
@@ -732,8 +733,8 @@ template <class AlphaType, class XVector, class BetaType, class YVector,
     typename std::enable_if<!KokkosKernels::Impl::kk_is_gpu_exec_space<
         typename YVector::execution_space>()>::type * = nullptr>
 void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const XVector &x,
-                           const BetaType &beta, YVector &y,
-                           const std::vector<Ordinal> &val_entries_ptr) {
+                           const BetaType &beta, YVector &y)
+{
 
   typedef Kokkos::View<
       typename XVector::const_value_type *,
@@ -787,63 +788,51 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
           default:
           case 1:
             spmv_transpose_serial<decltype(A_graph), 1>(alpha, &A.values[0], A_graph,
-                                              &val_entries_ptr[0], &x[0], &y[0],
-                                              blockSize);
+                                                        &x[0], &y[0], blockSize);
             break;
           case 2:
             spmv_transpose_serial<decltype(A_graph), 2>(alpha, &A.values[0], A_graph,
-                                              &val_entries_ptr[0], &x[0], &y[0],
-                                              blockSize);
+                                                        &x[0], &y[0], blockSize);
             break;
           case 3:
             spmv_transpose_serial<decltype(A_graph), 3>(alpha, &A.values[0], A_graph,
-                                              &val_entries_ptr[0], &x[0], &y[0],
-                                              blockSize);
+                                                        &x[0], &y[0], blockSize);
             break;
           case 4:
             spmv_transpose_serial<decltype(A_graph), 4>(alpha, &A.values[0], A_graph,
-                                              &val_entries_ptr[0], &x[0], &y[0],
-                                              blockSize);
+                                                        &x[0], &y[0], blockSize);
             break;
           case 5:
             spmv_transpose_serial<decltype(A_graph), 5>(alpha, &A.values[0], A_graph,
-                                              &val_entries_ptr[0], &x[0], &y[0],
-                                              blockSize);
+                                                        &x[0], &y[0], blockSize);
             break;
           case 6:
             spmv_transpose_serial<decltype(A_graph), 6>(alpha, &A.values[0], A_graph,
-                                              &val_entries_ptr[0], &x[0], &y[0],
-                                              blockSize);
+                                                        &x[0], &y[0], blockSize);
             break;
           case 7:
             spmv_transpose_serial<decltype(A_graph), 7>(alpha, &A.values[0], A_graph,
-                                              &val_entries_ptr[0], &x[0], &y[0],
-                                              blockSize);
+                                                        &x[0], &y[0], blockSize);
             break;
           case 8:
             spmv_transpose_serial<decltype(A_graph), 8>(alpha, &A.values[0], A_graph,
-                                              &val_entries_ptr[0], &x[0], &y[0],
-                                              blockSize);
+                                                        &x[0], &y[0], blockSize);
             break;
           case 9:
             spmv_transpose_serial<decltype(A_graph), 9>(alpha, &A.values[0], A_graph,
-                                              &val_entries_ptr[0], &x[0], &y[0],
-                                              blockSize);
+                                                        &x[0], &y[0], blockSize);
             break;
           case 10:
             spmv_transpose_serial<decltype(A_graph), 10>(alpha, &A.values[0], A_graph,
-                                               &val_entries_ptr[0], &x[0],
-                                               &y[0], blockSize);
+                                                         &x[0], &y[0], blockSize);
             break;
           case 11:
             spmv_transpose_serial<decltype(A_graph), 11>(alpha, &A.values[0], A_graph,
-                                               &val_entries_ptr[0], &x[0],
-                                               &y[0], blockSize);
+                                                         &x[0], &y[0], blockSize);
             break;
           case 12:
             spmv_transpose_serial<decltype(A_graph), 12>(alpha, &A.values[0], A_graph,
-                                               &val_entries_ptr[0], &x[0],
-                                               &y[0], blockSize);
+                                                         &x[0], &y[0], blockSize);
             break;
         }
         return;
@@ -851,13 +840,14 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
       //
       // --- Basic approach for large block sizes
       //
+      const auto blockSize2 = blockSize * blockSize;
       for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
         const auto jbeg       = A_graph.row_map[iblock];
         const auto jend       = A_graph.row_map[iblock + 1];
         const auto num_blocks = jend - jbeg;
         const auto lda = num_blocks * blockSize;
         const auto xval_ptr  = &x[iblock * blockSize];
-        const auto Aval = &A.values[0] + val_entries_ptr[iblock];
+        const auto Aval = &A.values[jbeg * blockSize2];
         for (Ordinal jb = 0; jb < num_blocks; ++jb) {
           auto yvec = &y[blockSize * A_graph.entries[jb + jbeg]];
           const auto Aval_ptr = Aval + jb * blockSize;
@@ -918,7 +908,7 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
             const auto num_blocks = jend - jbeg;
             const auto lda = num_blocks * blockSize;
             const auto xval_ptr  = &x[iblock * blockSize];
-            const auto Aval = &A.values[0] + val_entries_ptr[iblock];
+            const auto Aval = &A.values[blockSize2 * jbeg];
             for (Ordinal jb = 0; jb < num_blocks; ++jb) {
               const auto col_block = A.graph.entries[jb + jbeg];
               auto yvec = &y[blockSize * col_block];
@@ -936,7 +926,7 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
             const auto num_blocks = jend - jbeg;
             const auto lda = num_blocks * blockSize;
             const auto xval_ptr  = &x[iblock * blockSize];
-            const auto Aval = &A.values[0] + val_entries_ptr[iblock];
+            const auto Aval = &A.values[blockSize2 * jbeg];
             for (Ordinal jb = 0; jb < num_blocks; ++jb) {
               const auto col_block = A.graph.entries[jb + jbeg];
               auto yvec = &y[blockSize * col_block];
@@ -954,7 +944,7 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
             const auto num_blocks = jend - jbeg;
             const auto lda = num_blocks * blockSize;
             const auto xval_ptr  = &x[iblock * blockSize];
-            const auto Aval = &A.values[0] + val_entries_ptr[iblock];
+            const auto Aval = &A.values[blockSize2 * jbeg];
             for (Ordinal jb = 0; jb < num_blocks; ++jb) {
               const auto col_block = A.graph.entries[jb + jbeg];
               auto yvec = &y[blockSize * col_block];
@@ -972,7 +962,7 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
             const auto num_blocks = jend - jbeg;
             const auto lda = num_blocks * blockSize;
             const auto xval_ptr  = &x[iblock * blockSize];
-            const auto Aval = &A.values[0] + val_entries_ptr[iblock];
+            const auto Aval = &A.values[blockSize2 * jbeg];
             for (Ordinal jb = 0; jb < num_blocks; ++jb) {
               const auto col_block = A.graph.entries[jb + jbeg];
               auto yvec = &y[blockSize * col_block];
@@ -990,7 +980,7 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
             const auto num_blocks = jend - jbeg;
             const auto lda = num_blocks * blockSize;
             const auto xval_ptr  = &x[iblock * blockSize];
-            const auto Aval = &A.values[0] + val_entries_ptr[iblock];
+            const auto Aval = &A.values[blockSize2 * jbeg];
             for (Ordinal jb = 0; jb < num_blocks; ++jb) {
               const auto col_block = A.graph.entries[jb + jbeg];
               auto yvec = &y[blockSize * col_block];
@@ -1008,7 +998,7 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
             const auto num_blocks = jend - jbeg;
             const auto lda = num_blocks * blockSize;
             const auto xval_ptr  = &x[iblock * blockSize];
-            const auto Aval = &A.values[0] + val_entries_ptr[iblock];
+            const auto Aval = &A.values[blockSize2 * jbeg];
             for (Ordinal jb = 0; jb < num_blocks; ++jb) {
               const auto col_block = A.graph.entries[jb + jbeg];
               auto yvec = &y[blockSize * col_block];
@@ -1026,7 +1016,7 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
             const auto num_blocks = jend - jbeg;
             const auto lda = num_blocks * blockSize;
             const auto xval_ptr  = &x[iblock * blockSize];
-            const auto Aval = &A.values[0] + val_entries_ptr[iblock];
+            const auto Aval = &A.values[blockSize2 * jbeg];
             for (Ordinal jb = 0; jb < num_blocks; ++jb) {
               const auto col_block = A.graph.entries[jb + jbeg];
               auto yvec = &y[blockSize * col_block];
@@ -1045,7 +1035,7 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
         const auto num_blocks = jend - jbeg;
         const auto xvec       = &x[iblock * blockSize];
         const auto lda = blockSize * num_blocks;
-        const auto Aval       = &A.values[0] + val_entries_ptr[iblock];
+        const auto Aval       = &A.values[blockSize2 * jbeg];
         for (Ordinal jb = 0; jb < num_blocks; ++jb) {
           const auto col_block = A.graph.entries[jb + jbeg];
           auto yvec  = &y[blockSize * col_block];
@@ -1070,33 +1060,115 @@ void spMatVec_transpose(const AlphaType &alpha, const bcrs_matrix_t_ &A, const X
 // spmv: version for CPU execution spaces (RangePolicy or
 // trivial serial impl used)
 //
+/*
 template <class AlphaType, class XVector, class BetaType, class YVector,
     typename std::enable_if<!KokkosKernels::Impl::kk_is_gpu_exec_space<
         typename YVector::execution_space>()>::type * = nullptr>
 void spmv(const char fOp,
           const AlphaType &alpha, const bcrs_matrix_t_ &A, const XVector &x,
-          const BetaType &beta, YVector &y,
-          const std::vector<Ordinal> &val_entries_ptr) {
+          const BetaType &beta, YVector &y) {
   //
   // Call single-vector version if appropriate
   //
   if (x.extent(1) == 1) {
     if (fOp == 'N') {
-      return spMatVec_no_transpose(alpha, A, x, beta, y, val_entries_ptr);
+      return spMatVec_no_transpose(alpha, A, x, beta, y);
     }
     else if (fOp == 'T') {
-      return spMatVec_transpose(alpha, A, x, beta, y, val_entries_ptr);
+      return spMatVec_transpose(alpha, A, x, beta, y);
     }
   }
   else {
     if (fOp == 'N') {
-//      return spMatMultiVec_no_transpose(alpha, A, x, beta, y, val_entries_ptr);
+//      return spMatMultiVec_no_transpose(alpha, A, x, beta, y);
     }
     else if (fOp == 'T') {
-//      return spMatMultiVec_transpose(alpha, A, x, beta, y, val_entries_ptr);
+//      return spMatMultiVec_transpose(alpha, A, x, beta, y);
     }
   }
 }
+ */
+
+
+/////////////////////////////////////////////////////
+
+template <class AMatrix, class XVector, class YVector>
+bool verifyArguments(const char mode[], const AMatrix &A, const XVector &x,
+                     const YVector &y) {
+  // Make sure that both x and y have the same rank.
+  static_assert(
+      static_cast<int>(XVector::rank) == static_cast<int>(YVector::rank),
+      "KokkosSparse::spmv: Vector ranks do not match.");
+  // Make sure that y is non-const.
+  static_assert(std::is_same<typename YVector::value_type,
+                             typename YVector::non_const_value_type>::value,
+                "KokkosSparse::spmv: Output Vector must be non-const.");
+
+  // Check compatibility of dimensions at run time.
+  if ((mode[0] == KokkosSparse::NoTranspose[0]) || (mode[0] == KokkosSparse::Conjugate[0])) {
+    if ((x.extent(1) != y.extent(1)) ||
+        (static_cast<size_t>(A.numCols()) > static_cast<size_t>(x.extent(0))) ||
+        (static_cast<size_t>(A.numRows()) > static_cast<size_t>(y.extent(0)))) {
+      std::ostringstream os;
+      os << "KokkosSparse::spmv: Dimensions do not match: "
+         << ", A: " << A.numRows() << " x " << A.numCols()
+         << ", x: " << x.extent(0) << " x " << x.extent(1)
+         << ", y: " << y.extent(0) << " x " << y.extent(1);
+      Kokkos::Impl::throw_runtime_exception(os.str());
+    }
+  } else {
+    if ((x.extent(1) != y.extent(1)) ||
+        (static_cast<size_t>(A.numCols()) > static_cast<size_t>(y.extent(0))) ||
+        (static_cast<size_t>(A.numRows()) > static_cast<size_t>(x.extent(0)))) {
+      std::ostringstream os;
+      os << "KokkosSparse::spmv: Dimensions do not match (transpose): "
+         << ", A: " << A.numRows() << " x " << A.numCols()
+         << ", x: " << x.extent(0) << " x " << x.extent(1)
+         << ", y: " << y.extent(0) << " x " << y.extent(1);
+      Kokkos::Impl::throw_runtime_exception(os.str());
+    }
+  }
+
+  return true;
+
+}
+
+/////////////////////////////////////////////////////
+
+template< typename ScalarType , typename OrdinalType, class Device, class MemoryTraits, typename SizeType,
+    class AlphaType, class XVector, class BetaType, class YVector >
+void spmv(KokkosKernels::Experimental::Controls controls,
+          const char mode[],
+          const AlphaType& alpha,
+          const KokkosSparse::Experimental::BlockCrsMatrix< ScalarType, OrdinalType, Device, MemoryTraits, SizeType>& A,
+          const XVector& X,
+          const BetaType& beta,
+          const YVector& Y) {
+  //
+  details::verifyArguments(mode, A, X, Y);
+  //
+  if (X.extent(1) == 1) {
+    if (mode[0] == KokkosSparse::NoTranspose[0]) {
+      return spMatVec_no_transpose(alpha, A, X, beta, Y);
+    }
+    else if (mode[0] == KokkosSparse::Transpose[0]) {
+      return spMatVec_transpose(alpha, A, X, beta, Y);
+    }
+  }
+  else {
+    if (mode[0] == KokkosSparse::NoTranspose[0]) {
+      //      return spMatMultiVec_no_transpose(alpha, A, X, beta, Y);
+    }
+    else if (mode[0] == KokkosSparse::Transpose[0]) {
+      //      return spMatMultiVec_transpose(alpha, A, X, beta, Y);
+    }
+  }
+}
+
+
+
+/////////////////////////////////////////////////////
+
 
 /// \brief Generate a random multi-vector
 ///
@@ -1126,7 +1198,7 @@ typename values_type::non_const_type make_lhs(const int numRows) {
 
 
 template <typename mtx_t>
-std::chrono::duration<double> measure(const char fOp,
+std::chrono::duration<double> measure(const char fOp[],
                                       const mtx_t &myMatrix, const Scalar alpha,
                                       const Scalar beta, const int repeat) {
   const Ordinal numRows = myMatrix.numRows();
@@ -1135,7 +1207,7 @@ std::chrono::duration<double> measure(const char fOp,
   typename values_type::non_const_type y("rhs", numRows);
 
   std::chrono::duration<double> dt;
-  if (fOp == 'N') {
+  if (fOp[0] == KokkosSparse::NoTranspose[0]) {
     auto tBegin = std::chrono::high_resolution_clock::now();
     for (int ir = 0; ir < repeat; ++ir) {
       KokkosSparse::spmv("N", alpha, myMatrix, x, beta, y);
@@ -1143,7 +1215,7 @@ std::chrono::duration<double> measure(const char fOp,
     auto tEnd = std::chrono::high_resolution_clock::now();
     dt = tEnd - tBegin;
   }
-  else if (fOp == 'T'){
+  else if (fOp[0] == KokkosSparse::Transpose[0]){
     auto tBegin = std::chrono::high_resolution_clock::now();
     for (int ir = 0; ir < repeat; ++ir) {
       KokkosSparse::spmv("T", alpha, myMatrix, x, beta, y);
@@ -1157,17 +1229,18 @@ std::chrono::duration<double> measure(const char fOp,
 
 template <typename bmtx_t>
 std::chrono::duration<double> measure_block(
-    const char fOp,
-    const bmtx_t &myBlockMatrix, const std::vector<Ordinal> &val_entries_ptr,
+    const char fOp[],
+    const bmtx_t &myBlockMatrix,
     const Scalar alpha, const Scalar beta, const int repeat) {
   auto const numRows = myBlockMatrix.numRows() * myBlockMatrix.blockDim();
   auto const x       = make_lhs(numRows);
   typename values_type::non_const_type y("rhs", numRows);
+  KokkosKernels::Experimental::Controls controls;
 
   std::chrono::duration<double> dt;
   auto tBegin = std::chrono::high_resolution_clock::now();
   for (int ir = 0; ir < repeat; ++ir) {
-    details::spmv(fOp, alpha, myBlockMatrix, x, beta, y, val_entries_ptr);
+    details::spmv(controls, fOp, alpha, myBlockMatrix, x, beta, y);
   }
   auto tEnd = std::chrono::high_resolution_clock::now();
   dt = tEnd - tBegin;
@@ -1191,9 +1264,9 @@ std::vector<Ordinal> build_entry_ptr(const mtx_t &myBlockMatrix) {
 }
 
 template <typename mtx_t, typename bmtx_t>
-void compare(const char fOp,
+void compare(const char fOp[],
              const mtx_t &myMatrix, const bmtx_t &myBlockMatrix,
-             const std::vector<Ordinal> &val_entries_ptr, const Scalar alpha,
+             const Scalar alpha,
              const Scalar beta, double &error, double &maxNorm) {
   error   = 0.0;
   maxNorm = 0.0;
@@ -1202,14 +1275,15 @@ void compare(const char fOp,
   auto const x      = make_lhs(numRows);
   typename values_type::non_const_type y("rhs", numRows);
   typename values_type::non_const_type yref("ref", numRows);
+  KokkosKernels::Experimental::Controls controls;
 
-  if (fOp == 'N') {
+  if (fOp[0] == KokkosSparse::NoTranspose[0]) {
     KokkosSparse::spmv("N", alpha, myMatrix, x, beta, yref);
   }
-  else if (fOp == 'T') {
+  else if (fOp[0] == KokkosSparse::Transpose[0]) {
     KokkosSparse::spmv("T", alpha, myMatrix, x, beta, yref);
   }
-  details::spmv(fOp, alpha, myBlockMatrix, x, beta, y, val_entries_ptr);
+  details::spmv(controls, fOp, alpha, myBlockMatrix, x, beta, y);
 
   for (Ordinal ir = 0, numRows = y.size(); ir < numRows; ++ir) {
     /*
@@ -1235,15 +1309,12 @@ void test_matrix(const mtx_t &myMatrix, const int blockSize, const int repeat) {
   //
   bcrs_matrix_t_ myBlockMatrix = to_block_crs_matrix(myMatrix, blockSize);
 
-  auto const val_entries_ptr = build_entry_ptr(myBlockMatrix);
-
   double error = 0.0, maxNorm = 0.0;
 
   //
   // Assess y <- A * x
   //
-  compare('N', myMatrix, myBlockMatrix, val_entries_ptr, alpha, beta, error,
-          maxNorm);
+  compare("N", myMatrix, myBlockMatrix, alpha, beta, error, maxNorm);
 
   std::cout << " Error BlockCrsMatrix " << error << " maxNorm " << maxNorm
             << "\n";
@@ -1251,7 +1322,7 @@ void test_matrix(const mtx_t &myMatrix, const int blockSize, const int repeat) {
 
   //---
 
-  std::chrono::duration<double> dt_crs = measure('N', myMatrix, alpha, beta, repeat);
+  std::chrono::duration<double> dt_crs = measure("N", myMatrix, alpha, beta, repeat);
 
   std::cout << " Total time for Crs Mat-Vec " << dt_crs.count() << " Avg. "
             << dt_crs.count() / static_cast<double>(repeat);
@@ -1262,7 +1333,7 @@ void test_matrix(const mtx_t &myMatrix, const int blockSize, const int repeat) {
 
   //---
   std::chrono::duration<double> dt_bcrs =
-      measure_block('N', myBlockMatrix, val_entries_ptr, alpha, beta, repeat);
+      measure_block("N", myBlockMatrix, alpha, beta, repeat);
 
   std::cout << " Total time for BlockCrs Mat-Vec " << dt_bcrs.count()
             << " Avg. " << dt_bcrs.count() / static_cast<double>(repeat);
@@ -1284,8 +1355,7 @@ void test_matrix(const mtx_t &myMatrix, const int blockSize, const int repeat) {
   //
   // Assess y <- A * x
   //
-  compare('T', myMatrix, myBlockMatrix, val_entries_ptr, alpha, beta, error,
-          maxNorm);
+  compare("T", myMatrix, myBlockMatrix, alpha, beta, error, maxNorm);
 
   std::cout << " Error Transpose BlockCrsMatrix " << error << " maxNorm " << maxNorm
             << "\n";
@@ -1293,7 +1363,7 @@ void test_matrix(const mtx_t &myMatrix, const int blockSize, const int repeat) {
 
   //---
 
-  dt_crs = measure('T', myMatrix, alpha, beta, repeat);
+  dt_crs = measure("T", myMatrix, alpha, beta, repeat);
 
   std::cout << " Total time for Crs Mat^T-Vec " << dt_crs.count() << " Avg. "
             << dt_crs.count() / static_cast<double>(repeat);
@@ -1303,8 +1373,7 @@ void test_matrix(const mtx_t &myMatrix, const int blockSize, const int repeat) {
   std::cout << " ------------------------ \n";
 
   //---
-  dt_bcrs =
-      measure_block('T', myBlockMatrix, val_entries_ptr, alpha, beta, repeat);
+  dt_bcrs = measure_block("T", myBlockMatrix, alpha, beta, repeat);
 
   std::cout << " Total time for BlockCrs Mat^T-Vec " << dt_bcrs.count()
             << " Avg. " << dt_bcrs.count() / static_cast<double>(repeat);
