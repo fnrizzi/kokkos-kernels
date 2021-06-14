@@ -1450,6 +1450,8 @@ int main() {
     std::vector<test_t::RunInfo> variants;
     variants.push_back({"N"});
     variants.push_back({"T"});
+    variants.push_back({"N", -1, -1.0});
+    variants.push_back({"T", 3.14159, 0.25});
 
     // Run samples
     int sample_id = 0;
