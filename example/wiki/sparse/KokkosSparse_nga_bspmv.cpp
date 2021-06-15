@@ -188,17 +188,14 @@ bcrs_matrix_t_ to_block_crs_matrix(const crs_matrix_t_ &mat_crs,
   for (Ordinal ir = 0; ir < mat_crs.numRows(); ++ir) {
     const auto iblock = ir / blockSize;
     const auto ilocal = ir % blockSize;
-    Ordinal lda       = blockSize * (rows[iblock + 1] - rows[iblock]);
-    for (Ordinal jk = mat_crs.graph.row_map(ir);
-         jk < mat_crs.graph.row_map(ir + 1); ++jk) {
+    for (Ordinal jk = mat_crs.graph.row_map(ir); jk < mat_crs.graph.row_map(ir + 1); ++jk) {
       const auto jc     = mat_crs.graph.entries(jk);
       const auto jblock = jc / blockSize;
       const auto jlocal = jc % blockSize;
       for (Ordinal jkb = rows[iblock]; jkb < rows[iblock + 1]; ++jkb) {
         if (cols(jkb) == jblock) {
-          Ordinal shift = rows[iblock] * blockSize * blockSize +
-                          blockSize * (jkb - rows[iblock]);
-          vals(shift + jlocal + ilocal * lda) = mat_crs.values(jk);
+          Ordinal shift = jkb * blockSize * blockSize;
+          vals(shift + ilocal + jlocal * blockSize) = mat_crs.values(jk);
           break;
         }
       }
