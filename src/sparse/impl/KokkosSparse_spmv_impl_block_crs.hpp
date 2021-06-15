@@ -324,7 +324,7 @@ void spMatVec_no_transpose(const AlphaType &alpha,
         const auto Aval_ptr  = Aval + shifta;
         for (Ordinal kr = 0; kr < blockSize; ++kr) {
           for (Ordinal ic = 0; ic < blockSize; ++ic) {
-            yvec[kr] += Aval_ptr[ic + kr * lda] * xval_ptr[ic];
+            yvec[kr] += alpha * Aval_ptr[ic + kr * lda] * xval_ptr[ic];
           }
         }
       }
@@ -568,7 +568,7 @@ void spMatVec_no_transpose(const AlphaType &alpha,
         for (Ordinal ic = 0; ic < blockSize; ++ic) {
           const auto xvalue = xval_ptr[ic];
           for (Ordinal kr = 0; kr < blockSize; ++kr) {
-            yvec[kr] += Aval_ptr[ic + kr * lda] * xvalue;
+            yvec[kr] += alpha * Aval_ptr[ic + kr * lda] * xvalue;
           }
         }
       }
@@ -758,7 +758,7 @@ void spMatVec_transpose(const AlphaType &alpha,
         const auto Aval_ptr = Aval + jb * blockSize;
         for (Ordinal ic = 0; ic < blockSize; ++ic) {
           for (Ordinal kr = 0; kr < blockSize; ++kr) {
-            yvec[ic] += Aval_ptr[ic + kr * lda] * xval_ptr[kr];
+            yvec[ic] += alpha * Aval_ptr[ic + kr * lda] * xval_ptr[kr];
           }
         }
       }
@@ -955,9 +955,8 @@ void spMatVec_transpose(const AlphaType &alpha,
         for (Ordinal ic = 0; ic < blockSize; ++ic) {
           const auto xvalue = xvec[ic];
           for (Ordinal kr = 0; kr < blockSize; ++kr) {
-            Kokkos::atomic_add(
-                &yvec[kr],
-                static_cast<Scalar>(alpha * Aval_ptr[kr + ic * lda] * xvalue));
+            Kokkos::atomic_add( &yvec[kr],
+                static_cast<Scalar>(alpha * Aval_ptr[kr + ic * lda] * xvalue) );
           }
         }
       }
