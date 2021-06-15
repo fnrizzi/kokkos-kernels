@@ -460,10 +460,11 @@ template <typename ScalarType, typename OrdinalType, class Device,
 void spmv(KokkosKernels::Experimental::Controls controls, const char mode[],
           const AlphaType& alpha,
           const KokkosSparse::Experimental::BlockCrsMatrix<
-              ScalarType, OrdinalType, Device, MemoryTraits, SizeType>& A,
-          const XVector& X, const BetaType& beta, const YVector& Y) {
+              ScalarType, OrdinalType, Device, MemoryTraits, SizeType> &A,
+          const XVector& X, const BetaType& beta, YVector& Y) {
   //
   Impl::verifyArguments(mode, A, X, Y);
+  //
   //
   if (alpha == Kokkos::ArithTraits<AlphaType>::zero() || A.numRows() == 0 ||
       A.numCols() == 0 || A.nnz() == 0) {
@@ -482,22 +483,43 @@ void spmv(KokkosKernels::Experimental::Controls controls, const char mode[],
   bool useFallback = controls.isParameter("algorithm") &&
                      controls.getParameter("algorithm") == "native";
   //
+#ifdef KOKKOSKERNELS_ENABLE_TPL_CUSPARSE
+  //cuSPARSE does not support the conjugate mode (C), and cuSPARSE 9 only supports the normal (N) mode.
+  if(std::is_same<typename AMatrix_Internal::memory_space, Kokkos::CudaSpace>::value ||
+      std::is_same<typename AMatrix_Internal::memory_space, Kokkos::CudaUVMSpace>::value)
+  {
+#if (9000 <= CUDA_VERSION)
+    useFallback = useFallback || (mode[0] != NoTranspose[0]);
+#endif
+#if defined(CUSPARSE_VERSION) && (10300 <= CUSPARSE_VERSION)
+    useFallback = useFallback || (mode[0] == Conjugate[0]);
+#endif
+  }
+#endif
+  //
+#ifdef KOKKOSKERNELS_ENABLE_TPL_MKL
+  if (std::is_same<typename AMatrix_Internal::memory_space, Kokkos::HostSpace>::value)
+  {
+    useFallback = useFallback || (mode[0] == Conjugate[0]);
+  }
+#endif
+  //
   if (X.extent(1) == 1) {
     if (mode[0] == KokkosSparse::NoTranspose[0]) {
-      return Impl::spMatVec_no_transpose(alpha, A, X, beta, Y);
+      return Impl::spMatVec_no_transpose(alpha, A, X, beta, Y, useFallback);
     } else if (mode[0] == KokkosSparse::Transpose[0]) {
-      return Impl::spMatVec_transpose(alpha, A, X, beta, Y);
+      return Impl::spMatVec_transpose(alpha, A, X, beta, Y, useFallback);
     }
   } else {
     if (mode[0] == KokkosSparse::NoTranspose[0]) {
       std::cerr
           << "\n !!! Sparse Mat - MultiVec product not implemented !!!\n\n";
-      //      return Impl::spMatMultiVec_no_transpose(alpha, A, X, beta, Y);
+      //      return Impl::spMatMultiVec_no_transpose(alpha, A, X, beta, Y, useFallback);
       exit(-11);
     } else if (mode[0] == KokkosSparse::Transpose[0]) {
       std::cerr
           << "\n !!! Sparse Mat - MultiVec product not implemented !!!\n\n";
-      //      return Impl::spMatMultiVec_transpose(alpha, A, X, beta, Y);
+      //      return Impl::spMatMultiVec_transpose(alpha, A, X, beta, Y, useFallback);
       exit(-22);
     }
   }
