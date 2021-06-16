@@ -538,21 +538,21 @@ void spmv(KokkosKernels::Experimental::Controls controls, const char mode[],
   //
   if (X.extent(1) == 1) {
     if (mode[0] == KokkosSparse::NoTranspose[0]) {
-      return Impl::spMatVec_no_transpose(alpha, A, X, beta, Y, useFallback);
+      return Impl::spMatVec_no_transpose(controls, alpha, A, X, beta, Y, useFallback);
     } else if (mode[0] == KokkosSparse::Transpose[0]) {
-      return Impl::spMatVec_transpose(alpha, A, X, beta, Y, useFallback);
+      return Impl::spMatVec_transpose(controls, alpha, A, X, beta, Y, useFallback);
     }
   } else {
     if (mode[0] == KokkosSparse::NoTranspose[0]) {
       std::cerr
           << "\n !!! Sparse Mat - MultiVec product not implemented !!!\n\n";
-      //      return Impl::spMatMultiVec_no_transpose(alpha, A, X, beta, Y,
+      //      return Impl::spMatMultiVec_no_transpose(controls, alpha, A, X, beta, Y,
       //      useFallback);
       exit(-11);
     } else if (mode[0] == KokkosSparse::Transpose[0]) {
       std::cerr
           << "\n !!! Sparse Mat - MultiVec product not implemented !!!\n\n";
-      //      return Impl::spMatMultiVec_transpose(alpha, A, X, beta, Y,
+      //      return Impl::spMatMultiVec_transpose(controls, alpha, A, X, beta, Y,
       //      useFallback);
       exit(-22);
     }

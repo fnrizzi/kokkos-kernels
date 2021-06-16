@@ -195,7 +195,7 @@ bcrs_matrix_t_ to_block_crs_matrix(const crs_matrix_t_ &mat_crs,
       for (Ordinal jkb = rows[iblock]; jkb < rows[iblock + 1]; ++jkb) {
         if (cols(jkb) == jblock) {
           Ordinal shift = jkb * blockSize * blockSize;
-          vals(shift + ilocal + jlocal * blockSize) = mat_crs.values(jk);
+          vals(shift + jlocal + ilocal * blockSize) = mat_crs.values(jk);
           break;
         }
       }
@@ -303,27 +303,49 @@ std::vector<Ordinal> build_entry_ptr(const mtx_t &myBlockMatrix) {
   return val_entries_ptr;
 }
 
+/// \brief Compare the matrix-vector product between BlockCrsMatrix and CrsMatrix
+///
+/// \tparam mtx_t
+/// \tparam bmtx_t
+/// \param fOp
+/// \param myMatrix
+/// \param myBlockMatrix
+/// \param alpha
+/// \param beta
+/// \param error
+/// \param maxNorm
+/// \return True when the results are numerically identical (false, otherwise)
 template <typename mtx_t, typename bmtx_t>
-void compare(const char fOp[], const mtx_t &myMatrix,
+bool compare(const char fOp[], const mtx_t &myMatrix,
              const bmtx_t &myBlockMatrix, const Scalar alpha, const Scalar beta,
              double &error, double &maxNorm) {
   error   = 0.0;
   maxNorm = 0.0;
-
-  const int numRows = myMatrix.numRows();
-  auto const x      = make_lhs(numRows);
-  typename values_type::non_const_type y("rhs", numRows);
-  typename values_type::non_const_type yref("ref", numRows);
-  KokkosKernels::Experimental::Controls controls;
-
+  //
+  const auto numRows = myMatrix.numRows();
+  const auto numCols = myMatrix.numCols();
+  Ordinal xrow = 0, yrow = 0;
+  if (fOp[0] == KokkosSparse::NoTranspose[0]) {
+    xrow = static_cast<Ordinal>(numCols);
+    yrow = static_cast<Ordinal>(numRows);
+  } else if (fOp[0] == KokkosSparse::Transpose[0]) {
+    yrow = static_cast<Ordinal>(numCols);
+    xrow = static_cast<Ordinal>(numRows);
+  }
+  //
+  auto const x      = make_lhs(xrow);
+  typename values_type::non_const_type y("rhs", yrow);
+  typename values_type::non_const_type yref("ref", yrow);
   if (fOp[0] == KokkosSparse::NoTranspose[0]) {
     KokkosSparse::spmv("N", alpha, myMatrix, x, beta, yref);
   } else if (fOp[0] == KokkosSparse::Transpose[0]) {
     KokkosSparse::spmv("T", alpha, myMatrix, x, beta, yref);
   }
+  //
+  KokkosKernels::Experimental::Controls controls;
   KokkosSparse::spmv(controls, fOp, alpha, myBlockMatrix, x, beta, y);
-
-  for (Ordinal ir = 0, numRows = y.size(); ir < numRows; ++ir) {
+  //
+  for (Ordinal ir = 0; ir < yrow; ++ir) {
     /*
     if (ir < 16) {
       std::cout << '\t' << ir << '\t' << x(ir) << '\t' << yref(ir)
@@ -333,6 +355,11 @@ void compare(const char fOp[], const mtx_t &myMatrix,
     error   = std::max<double>(error, std::abs(yref(ir) - y(ir)));
     maxNorm = std::max<double>(maxNorm, std::abs(yref(ir)));
   }
+  double tol = 2.2e-16 * y.size();
+  if (error <= tol * maxNorm)
+    return true;
+  else
+    return false;
 }
 
 template<typename mtx_t = crs_matrix_t_, typename bmtx_t = bcrs_matrix_t_>
@@ -368,10 +395,12 @@ public:
   //
   bool execute(RunInfo &run)
   {
-    compare(run.mode, myMatrix_, myBlockMatrix_, run.alpha, run.beta, run.error, run.maxNorm);
-    run.dt_crs = measure(run.mode, myMatrix_, run.alpha, run.beta, repeat_);
-    run.dt_bcrs = measure_block(run.mode, myBlockMatrix_, run.alpha, run.beta, repeat_);
-    return true;
+    bool correct = compare(run.mode, myMatrix_, myBlockMatrix_, run.alpha, run.beta, run.error, run.maxNorm);
+    if (correct) {
+      run.dt_crs = measure(run.mode, myMatrix_, run.alpha, run.beta, repeat_);
+      run.dt_bcrs = measure_block(run.mode, myBlockMatrix_, run.alpha, run.beta, repeat_);
+    }
+    return correct;
   }
 
 // private:
@@ -384,7 +413,7 @@ public:
 
 template<typename test_t>
 void test_random(std::vector<test_t> &samples, const int repeat = 1024,
-                 const int minBlockSize = 1, const int maxBlockSize = 12) {
+                 const int minBlockSize = 1, const int maxBlockSize = 10) {
 
   // The mat_structure view is used to generate a matrix using
   // finite difference (FD) or finite element (FE) discretization
@@ -499,8 +528,22 @@ class CSVOutput
   void showRunResults(Test &test, RunInfo &run) {
     std::cout << sep << run.error << sep << run.maxNorm;
     auto const nnz = test.myMatrix_.nnz();
-    showTime(run.dt_crs, nnz, test.repeat_);
-    showTime(run.dt_bcrs, nnz, test.repeat_);
+    Ordinal flops = 0;
+    //
+    // This flop count would not work when the matrix is not square
+    //
+    if ((run.alpha == 0) && (run.beta != 0)) {
+      flops = test.myMatrix_.numRows();
+    }
+    else if ((run.alpha != 0) && (run.beta == 0)) {
+      flops = nnz;
+    }
+    else if ((run.alpha != 0) && (run.beta != 0)) {
+      flops = nnz + test.myMatrix_.numRows();
+    }
+    //
+    showTime(run.dt_crs, flops, test.repeat_);
+    showTime(run.dt_bcrs, flops, test.repeat_);
     auto const remarks = (run.dt_bcrs.count() < run.dt_crs.count()) ? "good" : "NOT_faster";
     std::cout << sep << (run.dt_bcrs.count() / run.dt_crs.count()) << sep << remarks;
     std::cout << std::endl;
@@ -508,10 +551,10 @@ class CSVOutput
 
 private:
   template <typename time_t, typename ord_t>
-  void showTime(const time_t &t, ord_t nnz, int repeat) {
+  void showTime(const time_t &t, ord_t flops, int repeat) {
     auto const avg = (t.count() / static_cast<double>(repeat));
-    auto const flops = nnz * static_cast<double>(repeat / t.count());
-    std::cout << sep <<t.count() << sep << avg << sep << (flops * 1e-9);
+    auto const total_flops = flops * static_cast<double>(repeat / t.count());
+    std::cout << sep <<t.count() << sep << avg << sep << (total_flops * 1e-9);
   }
 };
 
