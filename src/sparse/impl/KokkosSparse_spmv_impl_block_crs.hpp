@@ -59,6 +59,44 @@
 namespace KokkosSparse {
 namespace Impl {
 
+namespace Utils {
+
+template<int checkVal, int maxVal, typename F>
+struct _eti_expand_n {
+  void operator()(int val, F f) {
+    if (val == checkVal)
+      f.template operator()<checkVal>(val);
+    else
+      _eti_expand_n<checkVal - 1, maxVal, F>()(val, f);
+  }
+};
+
+template<int maxVal, typename F>
+struct _eti_expand_n<1, maxVal, F> {
+  void operator()(int val, F f) {
+    f.template operator()<1>(val);
+  }
+};
+
+//
+// Dispatches a call based on dynamic value through expandable operator specialized for some values.
+// Usage:
+//
+//  constexpr int MAX_N = 10;                             // expand ETI for N = 1..10
+//  Utils::eti_expand<MAX_N>(n, [&]<int N>(const int n) { // call for n
+//     ETIExpandableFunctor<N, ...>::mf(n, ...);          // dispatch to expandable functor
+//  });
+//
+template<int maxVal, typename F>
+void eti_expand(int val, F f) {
+  if (val > maxVal)
+    f.template operator()<0>(val);
+  else
+    _eti_expand_n<maxVal, maxVal, F>()(val, f);
+}
+
+} // namespace Utils
+
 //////////////////////////////////////////////////////////
 
 template <class AMatrix, class XVector, class YVector>
@@ -335,35 +373,6 @@ static inline void spmv(const Scalar alpha, const Scalar *Avalues,
 }
 };
 
-//
-// --- ETI helper
-//
-template <class StaticGraph>
-inline void spmv_serial(const int blockSize, const Scalar alpha, const Scalar *Avalues,
-                        const StaticGraph &Agraph, const Scalar *x, Scalar *y) {
-
-#ifdef EXPAND
-  #error Macro name collision on EXPAND()
-#endif
-#define EXPAND(N) case N: SerialSPMVHelper<N, StaticGraph>::spmv(alpha, Avalues, Agraph, &x[0], &y[0], blockSize); // this should be template function param or lambda...
-
-  switch (blockSize) { // TODO: if (blockSize <= std::min<size_t>(12, Impl::bmax)) ??
-    EXPAND(1)
-    EXPAND(2)
-    EXPAND(3)
-    EXPAND(4)
-    EXPAND(5)
-    EXPAND(6)
-    EXPAND(7)
-    EXPAND(8)
-    EXPAND(9)
-    EXPAND(10)
-    EXPAND(11)
-    EXPAND(12)
-    default: EXPAND(0)
-  }
-#undef EXPAND
-}
 /* ******************* */
 
 
@@ -500,7 +509,9 @@ void spMatVec_no_transpose(KokkosKernels::Experimental::Controls controls,
 #if defined(KOKKOS_ENABLE_SERIAL)
   if (std::is_same< typename AMatrix_Internal::device_type::execution_space,
       Kokkos::Serial>::value) {
-    spmv_serial<decltype(A_graph)>(blockSize, alpha, &A.values[0], A_graph, &x[0], &y[0]);
+    Utils::eti_expand<Impl::bmax>(blockSize, [&]<int N>(const int blockSize) {
+      SerialSPMVHelper<N, decltype(A_graph)>::spmv(alpha, &A.values[0], A_graph, &x[0], &y[0], blockSize);
+    });
     return;
   }
 #endif
