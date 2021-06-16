@@ -245,27 +245,15 @@ inline void spmv_serial_gemv(const Scalar *Aval, const Ordinal lda,
   }
 }
 
-template <class StaticGraph, int N>
-inline void spmv_serial(const Scalar alpha, const Scalar *Avalues,
-                        const StaticGraph &Agraph, const Scalar *x, Scalar *y) {
+//
+// Explicit blockSize=N case
+//
+template <int N, class StaticGraph>
+struct SerialSPMVHelper {
+static inline void spmv(const Scalar alpha, const Scalar *Avalues,
+                      const StaticGraph &Agraph, const Scalar *x, Scalar *y, const int blockSize) {
 
   const Ordinal numBlockRows = Agraph.numRows();
-  if (N == 1) {
-    for (Ordinal i = 0; i < numBlockRows; ++i) {
-      const auto jbeg = Agraph.row_map[i];
-      const auto jend = Agraph.row_map[i + 1];
-      double tmp      = 0.0;
-      for (Ordinal j = jbeg; j < jend; ++j) {
-        const auto alpha_value1 = alpha * Avalues[j];
-        const auto col_idx1     = Agraph.entries[j];
-        const auto x_val1       = x[col_idx1];
-        tmp += alpha_value1 * x_val1;
-      }
-      y[i] += tmp;
-    }
-    return;
-  }
-
   std::array<double, Impl::bmax> tmp{0};
   const Ordinal N2 = N * N;
   for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
@@ -276,7 +264,7 @@ inline void spmv_serial(const Scalar alpha, const Scalar *Avalues,
     for (Ordinal jb = 0; jb < num_blocks; ++jb) {
       const auto col_block = Agraph.entries[jb + jbeg];
       const auto xval_ptr  = x + N * col_block;
-      auto Aval_ptr        = &Avalues[(jb + jbeg) * N2];
+      auto Aval_ptr        = Avalues + (jb + jbeg) * N2;
       spmv_serial_gemv<N>(Aval_ptr, N, xval_ptr, tmp);
     }
     //
@@ -287,8 +275,95 @@ inline void spmv_serial(const Scalar alpha, const Scalar *Avalues,
   }
 
 }
+};
 
+//
+// Special blockSize=1 case (optimized)
+//
+template <class StaticGraph>
+struct SerialSPMVHelper<1, StaticGraph> {
+static inline void spmv(const Scalar alpha, const Scalar *Avalues,
+                        const StaticGraph &Agraph, const Scalar *x,
+                        Scalar *y, const int blockSize) {
 
+  const Ordinal numBlockRows = Agraph.numRows();
+  for (Ordinal i = 0; i < numBlockRows; ++i) {
+    const auto jbeg = Agraph.row_map[i];
+    const auto jend = Agraph.row_map[i + 1];
+    double tmp      = 0.0;
+    for (Ordinal j = jbeg; j < jend; ++j) {
+      const auto alpha_value1 = alpha * Avalues[j];
+      const auto col_idx1     = Agraph.entries[j];
+      const auto x_val1       = x[col_idx1];
+      tmp += alpha_value1 * x_val1;
+    }
+    y[i] += tmp;
+  }
+}
+};
+
+//
+// --- Basic approach for large block sizes
+//
+template <class StaticGraph>
+struct SerialSPMVHelper<0, StaticGraph> {
+static inline void spmv(const Scalar alpha, const Scalar *Avalues,
+                        const StaticGraph &A_graph, const Scalar *x,
+                        Scalar *y, const int blockSize) {
+
+    const Ordinal numBlockRows = A_graph.numRows();
+    const Ordinal blockSize_squared = blockSize * blockSize;
+    auto yvec = &y[0];
+    for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
+      const auto jbeg       = A_graph.row_map[iblock];
+      const auto jend       = A_graph.row_map[iblock + 1];
+      //
+      for (Ordinal jb = jbeg; jb < jend; ++jb) {
+        const auto col_block = A_graph.entries[jb];
+        const auto xval_ptr  = &x[0] + blockSize * col_block;
+        const auto Aval_ptr  = Avalues + jb * blockSize_squared;
+        for (Ordinal kr = 0; kr < blockSize; ++kr) {
+          for (Ordinal ic = 0; ic < blockSize; ++ic) {
+            auto q = Aval_ptr[ic + kr * blockSize];
+            yvec[kr] += alpha * q * xval_ptr[ic];
+          }
+        }
+      }
+      //
+      yvec = yvec + blockSize;
+    }
+}
+};
+
+//
+// --- ETI helper
+//
+template <class StaticGraph>
+inline void spmv_serial(const int blockSize, const Scalar alpha, const Scalar *Avalues,
+                        const StaticGraph &Agraph, const Scalar *x, Scalar *y) {
+
+#ifdef EXPAND
+  #error Macro name collision on EXPAND()
+#endif
+#define EXPAND(N) case N: SerialSPMVHelper<N, StaticGraph>::spmv(alpha, Avalues, Agraph, &x[0], &y[0], blockSize); // this should be template function param or lambda...
+
+  switch (blockSize) { // TODO: if (blockSize <= std::min<size_t>(12, Impl::bmax)) ??
+    EXPAND(1)
+    EXPAND(2)
+    EXPAND(3)
+    EXPAND(4)
+    EXPAND(5)
+    EXPAND(6)
+    EXPAND(7)
+    EXPAND(8)
+    EXPAND(9)
+    EXPAND(10)
+    EXPAND(11)
+    EXPAND(12)
+    default: EXPAND(0)
+  }
+#undef EXPAND
+}
 /* ******************* */
 
 
@@ -425,83 +500,7 @@ void spMatVec_no_transpose(KokkosKernels::Experimental::Controls controls,
 #if defined(KOKKOS_ENABLE_SERIAL)
   if (std::is_same< typename AMatrix_Internal::device_type::execution_space,
       Kokkos::Serial>::value) {
-    //
-    if (blockSize <= std::min<size_t>(8, Impl::bmax)) {
-      switch (blockSize) {
-        default:
-        case 1:
-          spmv_serial<decltype(A_graph), 1>(alpha, &A.values[0], A_graph, &x[0],
-                                            &y[0]);
-          break;
-        case 2:
-          spmv_serial<decltype(A_graph), 2>(alpha, &A.values[0], A_graph, &x[0],
-                                            &y[0]);
-          break;
-        case 3:
-          spmv_serial<decltype(A_graph), 3>(alpha, &A.values[0], A_graph, &x[0],
-                                            &y[0]);
-          break;
-        case 4:
-          spmv_serial<decltype(A_graph), 4>(alpha, &A.values[0], A_graph, &x[0],
-                                            &y[0]);
-          break;
-        case 5:
-          spmv_serial<decltype(A_graph), 5>(alpha, &A.values[0], A_graph, &x[0],
-                                            &y[0]);
-          break;
-        case 6:
-          spmv_serial<decltype(A_graph), 6>(alpha, &A.values[0], A_graph, &x[0],
-                                            &y[0]);
-          break;
-        case 7:
-          spmv_serial<decltype(A_graph), 7>(alpha, &A.values[0], A_graph, &x[0],
-                                            &y[0]);
-          break;
-        case 8:
-          spmv_serial<decltype(A_graph), 8>(alpha, &A.values[0], A_graph, &x[0],
-                                            &y[0]);
-          break;
-        case 9:
-          spmv_serial<decltype(A_graph), 9>(alpha, &A.values[0], A_graph, &x[0],
-                                            &y[0]);
-          break;
-        case 10:
-          spmv_serial<decltype(A_graph), 10>(alpha, &A.values[0], A_graph,
-                                             &x[0], &y[0]);
-          break;
-        case 11:
-          spmv_serial<decltype(A_graph), 11>(alpha, &A.values[0], A_graph,
-                                             &x[0], &y[0]);
-          break;
-        case 12:
-          spmv_serial<decltype(A_graph), 12>(alpha, &A.values[0], A_graph,
-                                             &x[0], &y[0]);
-          break;
-      }
-      return;
-    }
-    //
-    // --- Basic approach for large block sizes
-    //
-    const Ordinal blockSize_squared = blockSize * blockSize;
-    auto yvec = &y[0];
-    for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-      const auto jbeg       = A_graph.row_map[iblock];
-      const auto jend       = A_graph.row_map[iblock + 1];
-      //
-      for (Ordinal jb = jbeg; jb < jend; ++jb) {
-        const auto col_block = A_graph.entries[jb];
-        const auto xval_ptr  = &x[0] + blockSize * col_block;
-        const auto Aval_ptr  = &A.values[jb * blockSize_squared];
-        for (Ordinal kr = 0; kr < blockSize; ++kr) {
-          for (Ordinal ic = 0; ic < blockSize; ++ic) {
-            yvec[kr] += alpha * Aval_ptr[ic + kr * blockSize] * xval_ptr[ic];
-          }
-        }
-      }
-      //
-      yvec = yvec + blockSize;
-    }
+    spmv_serial<decltype(A_graph)>(blockSize, alpha, &A.values[0], A_graph, &x[0], &y[0]);
     return;
   }
 #endif
