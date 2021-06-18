@@ -168,46 +168,54 @@ struct BSPMV_Functor {
   }
 
   KOKKOS_INLINE_FUNCTION
-  void operator()(const team_member &dev) const {
+  void operator()(const team_member &dev) const
+  {
     using y_value_type = typename YVector::non_const_value_type;
-    //
-    // UH -- To be completed
-    //
-    /*
     Kokkos::parallel_for(
-        Kokkos::TeamThreadRange(dev, 0, rows_per_team),
+        Kokkos::TeamThreadRange(dev, 0, blocks_per_team),
         [&](const ordinal_type &loop) {
-          const ordinal_type iRow =
-              static_cast<ordinal_type>(dev.league_rank()) * rows_per_team +
+          const ordinal_type iBlock =
+              static_cast<ordinal_type>(dev.league_rank()) * blocks_per_team +
               loop;
-          if (iRow >= m_A.numRows()) {
+          if (iBlock >= m_A.numRows()) {
             return;
           }
-          const KokkosSparse::SparseRowViewConst<AMatrix> row =
-              m_A.rowConst(iRow);
-          const auto row_length = static_cast<ordinal_type>(row.length);
-          y_value_type sum              = 0;
-
-          Kokkos::parallel_reduce(
-              Kokkos::ThreadVectorRange(dev, row_length),
-              [&](const ordinal_type &iEntry, y_value_type &lsum) {
-                const value_type val = conjugate ? ATV::conj(row.value(iEntry))
-                                                 : row.value(iEntry);
-                lsum += val * m_x(row.colidx(iEntry));
-              },
-              sum);
-
-          Kokkos::single(Kokkos::PerThread(dev), [&]() {
-            sum *= alpha;
-
-            if (dobeta == 0) {
-              m_y(iRow) = sum;
-            } else {
-              m_y(iRow) = beta * m_y(iRow) + sum;
-            }
-          });
-        });
-        */
+          //
+          const auto jbeg         = m_A.graph.row_map[iBlock];
+          const auto jend         = m_A.graph.row_map[iBlock + 1];
+          const auto row_num_blocks = static_cast<ordinal_type>(jend - jbeg);
+          const auto block_size_2 = block_size * block_size;
+          const auto col_idx      = &m_A.graph.entries[jbeg];
+          const auto *Aval_ptr = &m_A.values[jbeg * block_size_2];
+          //
+          auto yvec = &m_y[iBlock * block_size];
+          y_value_type lsum = 0;
+          //
+          for (ordinal_type ir = 0; ir < block_size; ++ir) {
+            lsum = 0;
+            Kokkos::parallel_reduce(
+                Kokkos::ThreadVectorRange(dev, row_num_blocks),
+                [&](const ordinal_type &iEntry, y_value_type &ysum) {
+                  const ordinal_type col_block = col_idx[iEntry] * block_size;
+                  const auto xval              = &m_x[col_block];
+                  const auto *Aval = Aval_ptr + iEntry * block_size_2
+                                     + ir * block_size;
+                  for (ordinal_type jc = 0; jc < block_size; ++jc) {
+                    const value_type val = conjugate ? ATV::conj(Aval[jc])
+                                                     : Aval[jc];
+                    lsum += val * xval[jc];
+                  }
+                },
+                lsum);
+            //
+            Kokkos::single(Kokkos::PerThread(dev), [&]() {
+              lsum *= alpha;
+              yvec[ir] += lsum;
+            });
+          }
+          //
+        }
+    );
   }
 };
 
@@ -366,6 +374,88 @@ void bspmv_raw_openmp_no_transpose(typename YVector::const_value_type& s_a,
 
 
 //
+// spMatVec_no_transpose: version for GPU execution spaces (TeamPolicy used)
+//
+template < class AT, class AO, class AD, class AM, class AS,
+          class AlphaType, class XVector, class BetaType, class YVector,
+          typename std::enable_if< KokkosKernels::Impl::kk_is_gpu_exec_space<typename YVector::execution_space>()>::type* = nullptr>
+void spMatVec_no_transpose(KokkosKernels::Experimental::Controls controls,
+                           const AlphaType &alpha,
+                           const KokkosSparse::Experimental::BlockCrsMatrix< AT, AO, AD, AM, AS> &A,
+                           const XVector &x, const BetaType &beta, YVector &y,
+                           bool useFallback, bool useConjugate)
+{
+
+  if (A.numRows () <= static_cast<AO> (0)) {
+    return;
+  }
+
+  typedef KokkosSparse::Experimental::BlockCrsMatrix<AT, AO, AD,
+                                                     Kokkos::MemoryTraits<Kokkos::Unmanaged>, AS> AMatrix_Internal;
+  typedef typename AMatrix_Internal::non_const_ordinal_type ordinal_type;
+  typedef typename AMatrix_Internal::execution_space execution_space;
+
+  bool use_dynamic_schedule = false; // Forces the use of a dynamic schedule
+  bool use_static_schedule  = false; // Forces the use of a static schedule
+  if(controls.isParameter("schedule")) {
+    if(controls.getParameter("schedule") == "dynamic") {
+      use_dynamic_schedule = true;
+    } else if(controls.getParameter("schedule") == "static") {
+      use_static_schedule  = true;
+    }
+  }
+  int team_size = -1;
+  int vector_length = -1;
+  int64_t blocks_per_thread = -1;
+
+  //
+  // Use the controls to allow the user to pass in some tuning parameters.
+  //
+  if (controls.isParameter("team size")) {
+    team_size       = std::stoi(controls.getParameter("team size"));
+  }
+  if (controls.isParameter("vector length")) {
+    vector_length   = std::stoi(controls.getParameter("vector length"));
+  }
+  if (controls.isParameter("rows per thread")) {
+    blocks_per_thread = std::stoll(controls.getParameter("rows per thread"));
+  }
+
+  //
+  // Use the existing launch parameters routine from SPMV
+  //
+  int64_t blocks_per_team = KokkosSparse::Impl::spmv_launch_parameters<execution_space>(A.numRows(),
+                                                                     A.nnz(), blocks_per_thread,
+                                                                     team_size, vector_length);
+  int64_t worksets = (A.numRows() + blocks_per_team - 1) / blocks_per_team;
+
+  AMatrix_Internal A_internal = A;
+
+  BSPMV_Functor<AMatrix_Internal,XVector,YVector> func (alpha, A_internal, x, y, blocks_per_team, useConjugate);
+
+  if (((A.nnz() > 10000000) || use_dynamic_schedule) && !use_static_schedule) {
+    Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Dynamic> > policy(1,1);
+    if(team_size<0)
+      policy = Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Dynamic> >(worksets, Kokkos::AUTO, vector_length);
+    else
+      policy = Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Dynamic> >(worksets, team_size, vector_length);
+    Kokkos::parallel_for("KokkosSparse::bspmv<NoTranspose,Dynamic>", policy, func);
+  } else {
+    Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Static> > policy(1,1);
+    if(team_size<0)
+      policy = Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Static> >(worksets, Kokkos::AUTO, vector_length);
+    else
+      policy = Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Static> >(worksets, team_size, vector_length);
+    Kokkos::parallel_for("KokkosSparse::bspmv<NoTranspose, Static>", policy, func);
+  }
+
+}
+
+
+/* ******************* */
+
+
+//
 // spMatVec_no_transpose: version for CPU execution spaces (RangePolicy or
 // trivial serial impl used)
 //
@@ -377,7 +467,7 @@ void spMatVec_no_transpose(KokkosKernels::Experimental::Controls controls,
                            const AlphaType &alpha,
                            const KokkosSparse::Experimental::BlockCrsMatrix< AT, AO, AD, AM, AS> &A,
                            const XVector &x, const BetaType &beta, YVector &y,
-                           bool useFallback) {
+                           bool useFallback, bool useConjugate) {
 
   typedef Kokkos::View<
       typename XVector::const_value_type *,
@@ -409,9 +499,6 @@ void spMatVec_no_transpose(KokkosKernels::Experimental::Controls controls,
   XVector_Internal x_i       = x;
   const Ordinal blockSize    = A.blockDim();
   const Ordinal numBlockRows = A.numRows();
-  //
-  const bool conjugate = false;
-  //
   ////////////
   assert(useFallback);
   ////////////
@@ -531,7 +618,7 @@ void spMatVec_no_transpose(KokkosKernels::Experimental::Controls controls,
       use_static_schedule  = true;
     }
   }
-  BSPMV_Functor<AMatrix_Internal,XVector,YVector> func (alpha, A_internal, x, y, 1, conjugate);
+  BSPMV_Functor<AMatrix_Internal,XVector,YVector> func (alpha, A_internal, x, y, 1, useConjugate);
   if(((A.nnz()>10000000) || use_dynamic_schedule) && !use_static_schedule)
     Kokkos::parallel_for("KokkosSparse::bspmv<NoTranspose,Dynamic>",Kokkos::RangePolicy<execution_space, Kokkos::Schedule<Kokkos::Dynamic>>(0, A.numRows()),func);
   else
@@ -589,6 +676,25 @@ inline void spmv_transpose_serial(const Scalar alpha, Scalar *Avalues,
   }
 }
 
+
+//
+// spMatVec_transpose: version for GPU execution spaces (TeamPolicy used)
+//
+template < class AT, class AO, class AD, class AM, class AS,
+          class AlphaType, class XVector, class BetaType, class YVector,
+          typename std::enable_if< KokkosKernels::Impl::kk_is_gpu_exec_space<typename YVector::execution_space>()>::type* = nullptr>
+void spMatVec_transpose(KokkosKernels::Experimental::Controls controls,
+                           const AlphaType &alpha,
+                           const KokkosSparse::Experimental::BlockCrsMatrix< AT, AO, AD, AM, AS> &A,
+                           const XVector &x, const BetaType &beta, YVector &y,
+                           bool useFallback, bool useConjugate)
+{
+  if (A.numCols() <= static_cast<AO>(0)) {
+    return;
+  }
+}
+
+
 //
 // spMatVec_transpose: version for CPU execution spaces (RangePolicy or
 // trivial serial impl used)
@@ -601,7 +707,8 @@ void spMatVec_transpose(KokkosKernels::Experimental::Controls controls,
                         const AlphaType &alpha,
                         const KokkosSparse::Experimental::BlockCrsMatrix< AT, AO, AD, AM, AS> &A,
                         const XVector &x, const BetaType &beta, YVector &y,
-                        bool useFallback) {
+                        bool useFallback, bool useConjugate)
+{
 
   typedef Kokkos::View<
       typename XVector::const_value_type *,
@@ -643,7 +750,6 @@ void spMatVec_transpose(KokkosKernels::Experimental::Controls controls,
   const Ordinal blockSize    = A_internal.blockDim();
   const Ordinal numBlockRows = A_internal.numRows();
   //
-  const bool conjugate = false;
   const auto &A_graph = A_internal.graph;
   //
 #if defined(KOKKOS_ENABLE_SERIAL)
