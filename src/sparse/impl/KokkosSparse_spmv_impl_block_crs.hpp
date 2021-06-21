@@ -51,6 +51,8 @@
 #include "KokkosKernels_default_types.hpp"
 #include "KokkosSparse_BlockCrsMatrix.hpp"
 
+#include "KokkosSparse_spmv_impl.hpp"
+
 #include "KokkosKernels_helpers.hpp"
 #include "KokkosKernels_Controls.hpp"
 #include "KokkosKernels_Utils.hpp"
@@ -630,6 +632,283 @@ void spMatVec_no_transpose(KokkosKernels::Experimental::Controls controls,
 /* ******************* */
 
 
+template <class AMatrix, class XVector, class YVector>
+struct BSPMV_Transpose_Functor {
+  typedef typename AMatrix::execution_space execution_space;
+  typedef typename AMatrix::non_const_ordinal_type ordinal_type;
+  typedef typename AMatrix::non_const_value_type value_type;
+  typedef typename Kokkos::TeamPolicy<execution_space> team_policy;
+  typedef typename team_policy::member_type team_member;
+  typedef Kokkos::Details::ArithTraits<value_type> ATV;
+
+  const value_type alpha;
+  AMatrix m_A;
+  XVector m_x;
+  YVector m_y;
+  const ordinal_type block_size;
+
+  const ordinal_type blocks_per_team;
+
+  bool conjugate = false;
+
+  BSPMV_Transpose_Functor(const value_type alpha_, const AMatrix m_A_,
+                          const XVector m_x_, const YVector m_y_,
+                          const int blocks_per_team_, bool conj_)
+      : alpha(alpha_),
+        m_A(m_A_),
+        m_x(m_x_),
+        m_y(m_y_),
+        block_size(m_A_.blockDim()),
+        blocks_per_team(blocks_per_team_),
+        conjugate(conj_) {
+    static_assert(static_cast<int>(XVector::rank) == 1,
+                  "XVector must be a rank 1 View.");
+    static_assert(static_cast<int>(YVector::rank) == 1,
+                  "YVector must be a rank 1 View.");
+  }
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(const ordinal_type iBlock) const {
+    //
+    if (iBlock >= m_A.numRows()) {
+      return;
+    }
+    //
+    const auto jbeg         = m_A.graph.row_map[iBlock];
+    const auto jend         = m_A.graph.row_map[iBlock + 1];
+    const auto block_size_2 = block_size * block_size;
+    const auto xvec         = &m_x[iBlock * block_size];
+    //
+    for (Ordinal jb = jbeg; jb < jend; ++jb) {
+      const auto col_block = m_A.graph.entries[jb];
+      auto yvec            = &m_y[block_size * col_block];
+      const auto Aval_ptr  = &m_A.values[block_size_2 * jb];
+      for (Ordinal ic = 0; ic < block_size; ++ic) {
+        const auto xvalue = xvec[ic];
+        for (Ordinal kr = 0; kr < block_size; ++kr) {
+          const auto val = (conjugate)
+                               ? ATV::conj(Aval_ptr[kr + ic * block_size])
+                               : Aval_ptr[kr + ic * block_size];
+          Kokkos::atomic_add(&yvec[kr],
+                             static_cast<Scalar>(alpha * val * xvalue));
+        }
+      }
+    }
+  }
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(const team_member &dev) const {
+    using y_value_type = typename YVector::non_const_value_type;
+    Kokkos::parallel_for(
+        Kokkos::TeamThreadRange(dev, 0, blocks_per_team),
+        [&](const ordinal_type &loop) {
+          const ordinal_type iBlock =
+              static_cast<ordinal_type>(dev.league_rank()) * blocks_per_team +
+              loop;
+          if (iBlock >= m_A.numRows()) {
+            return;
+          }
+          //
+          const auto jbeg           = m_A.graph.row_map[iBlock];
+          const auto jend           = m_A.graph.row_map[iBlock + 1];
+          const auto row_num_blocks = static_cast<ordinal_type>(jend - jbeg);
+          const auto block_size_2   = block_size * block_size;
+          const auto col_idx        = &m_A.graph.entries[jbeg];
+          const auto *Aval_ptr      = &m_A.values[jbeg * block_size_2];
+          //
+          const auto xvec = &m_x[iBlock * block_size];
+          //
+          for (ordinal_type ir = 0; ir < block_size; ++ir) {
+            Kokkos::parallel_for(
+                Kokkos::ThreadVectorRange(dev, row_num_blocks),
+                [&](const ordinal_type &iEntry) {
+                  const ordinal_type col_block =
+                      col_idx[iEntry + jbeg] * block_size;
+                  auto yvec = &m_y[col_block];
+                  const auto *Aval =
+                      Aval_ptr + iEntry * block_size_2 + ir * block_size;
+                  for (ordinal_type jc = 0; jc < block_size; ++jc) {
+                    const value_type val =
+                        conjugate ? ATV::conj(Aval[jc]) : Aval[jc];
+                    Kokkos::atomic_add(&yvec[jc], static_cast<y_value_type>(
+                                                      alpha * val * xvec[ir]));
+                  }
+                });
+            //
+          }
+          //
+        });
+  }
+};
+
+
+/* ******************* */
+
+
+#ifdef KOKKOS_ENABLE_OPENMP
+template<typename AMatrix, typename XVector, typename YVector>
+void bspmv_raw_openmp_transpose(typename YVector::const_value_type& s_a,
+                                AMatrix A, XVector x,  YVector y)
+{
+  typedef typename YVector::non_const_value_type value_type;
+  typedef typename AMatrix::ordinal_type         ordinal_type;
+  typedef typename AMatrix::non_const_size_type  size_type;
+
+  typename XVector::const_value_type* KOKKOS_RESTRICT x_ptr = x.data();
+  typename YVector::non_const_value_type* KOKKOS_RESTRICT y_ptr = y.data();
+
+  const typename AMatrix::value_type* KOKKOS_RESTRICT matrixCoeffs = A.values.data();
+  const ordinal_type* KOKKOS_RESTRICT matrixCols     = A.graph.entries.data();
+  const size_type* KOKKOS_RESTRICT matrixRowOffsets  = A.graph.row_map.data();
+  const size_type* KOKKOS_RESTRICT threadStarts      = A.graph.row_block_offsets.data();
+
+#if defined(KOKKOS_ENABLE_PROFILING)
+  uint64_t kpID = 0;
+  if(Kokkos::Profiling::profileLibraryLoaded()) {
+    Kokkos::Profiling::beginParallelFor("KokkosSparse::spmv<RawOpenMP,NoTranspose>", 0, &kpID);
+  }
+#endif
+
+  typename YVector::const_value_type zero = 0;
+  #pragma omp parallel
+  {
+#if defined(KOKKOS_COMPILER_INTEL) && !defined(__clang__)
+    __assume_aligned(x_ptr, 64);
+    __assume_aligned(y_ptr, 64);
+#endif
+
+    const int myID    = omp_get_thread_num();
+    const size_type myStart = threadStarts[myID];
+    const size_type myEnd   = threadStarts[myID + 1];
+    const auto blockSize = A.blockDim();
+    const auto blockSize2 = blockSize * blockSize;
+
+    for (size_type row = myStart; row < myEnd; ++row) {
+      const size_type rowStart = matrixRowOffsets[row];
+      const size_type rowEnd   = matrixRowOffsets[row + 1];
+      //
+      const auto xvec = &x[row * blockSize];
+      //
+      for (Ordinal jblock = rowStart; jblock < rowEnd; ++jblock) {
+        const auto col_block = A.graph.entries[jblock];
+        auto yvec            = &y[blockSize * col_block];
+        const auto Aval_ptr  = &matrixCoeffs[jblock * blockSize2];
+        for (Ordinal ic = 0; ic < blockSize; ++ic) {
+          const auto xvalue = xvec[ic];
+          for (Ordinal kr = 0; kr < blockSize; ++kr) {
+            Kokkos::atomic_add( &yvec[kr],
+                                static_cast<Scalar>(s_a * Aval_ptr[ic + kr * blockSize] * xvalue) );
+          }
+        }
+      }
+    }
+  }
+
+#if defined(KOKKOS_ENABLE_PROFILING)
+  if (Kokkos::Profiling::profileLibraryLoaded()) {
+    Kokkos::Profiling::endParallelFor(kpID);
+  }
+#endif
+
+}
+#endif
+
+
+/* ******************* */
+
+//
+// spMatVec_no_transpose: version for GPU execution spaces (TeamPolicy used)
+//
+template <class AT, class AO, class AD, class AM, class AS, class AlphaType,
+          class XVector, class BetaType, class YVector,
+          typename std::enable_if<KokkosKernels::Impl::kk_is_gpu_exec_space<
+              typename YVector::execution_space>()>::type * = nullptr>
+void spMatVec_transpose(
+    KokkosKernels::Experimental::Controls controls, const AlphaType &alpha,
+    const KokkosSparse::Experimental::BlockCrsMatrix<AT, AO, AD, AM, AS> &A,
+    const XVector &x, const BetaType &beta, YVector &y, bool useFallback,
+    bool useConjugate) {
+  if (A.numRows() <= static_cast<AO>(0)) {
+    return;
+  }
+
+  typedef KokkosSparse::Experimental::BlockCrsMatrix<
+      AT, AO, AD, Kokkos::MemoryTraits<Kokkos::Unmanaged>, AS>
+      AMatrix_Internal;
+  typedef typename AMatrix_Internal::non_const_ordinal_type ordinal_type;
+  typedef typename AMatrix_Internal::execution_space execution_space;
+
+  bool use_dynamic_schedule = false;  // Forces the use of a dynamic schedule
+  bool use_static_schedule  = false;  // Forces the use of a static schedule
+  if (controls.isParameter("schedule")) {
+    if (controls.getParameter("schedule") == "dynamic") {
+      use_dynamic_schedule = true;
+    } else if (controls.getParameter("schedule") == "static") {
+      use_static_schedule = true;
+    }
+  }
+  int team_size             = -1;
+  int vector_length         = -1;
+  int64_t blocks_per_thread = -1;
+
+  //
+  // Use the controls to allow the user to pass in some tuning parameters.
+  //
+  if (controls.isParameter("team size")) {
+    team_size = std::stoi(controls.getParameter("team size"));
+  }
+  if (controls.isParameter("vector length")) {
+    vector_length = std::stoi(controls.getParameter("vector length"));
+  }
+  if (controls.isParameter("rows per thread")) {
+    blocks_per_thread = std::stoll(controls.getParameter("rows per thread"));
+  }
+
+  //
+  // Use the existing launch parameters routine from SPMV
+  //
+  int64_t blocks_per_team =
+      KokkosSparse::Impl::spmv_launch_parameters<execution_space>(
+          A.numRows(), A.nnz(), blocks_per_thread, team_size, vector_length);
+  int64_t worksets = (A.numRows() + blocks_per_team - 1) / blocks_per_team;
+
+  AMatrix_Internal A_internal = A;
+
+  BSPMV_Transpose_Functor<AMatrix_Internal, XVector, YVector> func(
+      alpha, A_internal, x, y, blocks_per_team, useConjugate);
+
+  if (((A.nnz() > 10000000) || use_dynamic_schedule) && !use_static_schedule) {
+    Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Dynamic>>
+        policy(1, 1);
+    if (team_size < 0)
+      policy = Kokkos::TeamPolicy<execution_space,
+                                  Kokkos::Schedule<Kokkos::Dynamic>>(
+          worksets, Kokkos::AUTO, vector_length);
+    else
+      policy = Kokkos::TeamPolicy<execution_space,
+                                  Kokkos::Schedule<Kokkos::Dynamic>>(
+          worksets, team_size, vector_length);
+    Kokkos::parallel_for("KokkosSparse::bspmv<NoTranspose,Dynamic>", policy,
+                         func);
+  } else {
+    Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Static>>
+        policy(1, 1);
+    if (team_size < 0)
+      policy =
+          Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Static>>(
+              worksets, Kokkos::AUTO, vector_length);
+    else
+      policy =
+          Kokkos::TeamPolicy<execution_space, Kokkos::Schedule<Kokkos::Static>>(
+              worksets, team_size, vector_length);
+    Kokkos::parallel_for("KokkosSparse::bspmv<NoTranspose, Static>", policy,
+                         func);
+  }
+}
+
+/* ******************* */
+
+
 template <int M>
 inline void spmv_transpose_gemv(const Scalar alpha, const Scalar *Aval,
                                 const Ordinal lda, const Ordinal xrow,
@@ -673,24 +952,6 @@ inline void spmv_transpose_serial(const Scalar alpha, Scalar *Avalues,
       //
       spmv_transpose_gemv<N>(alpha, Aval_ptr, N, N, xval_ptr, yvec);
     }
-  }
-}
-
-
-//
-// spMatVec_transpose: version for GPU execution spaces (TeamPolicy used)
-//
-template < class AT, class AO, class AD, class AM, class AS,
-          class AlphaType, class XVector, class BetaType, class YVector,
-          typename std::enable_if< KokkosKernels::Impl::kk_is_gpu_exec_space<typename YVector::execution_space>()>::type* = nullptr>
-void spMatVec_transpose(KokkosKernels::Experimental::Controls controls,
-                           const AlphaType &alpha,
-                           const KokkosSparse::Experimental::BlockCrsMatrix< AT, AO, AD, AM, AS> &A,
-                           const XVector &x, const BetaType &beta, YVector &y,
-                           bool useFallback, bool useConjugate)
-{
-  if (A.numCols() <= static_cast<AO>(0)) {
-    return;
   }
 }
 
@@ -832,175 +1093,25 @@ void spMatVec_transpose(KokkosKernels::Experimental::Controls controls,
   }
 #endif
 
+  typedef typename AMatrix_Internal::execution_space execution_space;
+
 #ifdef KOKKOS_ENABLE_OPENMP
-  //
-  const Ordinal blockSize2 = blockSize * blockSize;
-  //
-  if (blockSize <= std::min<size_t>(8, Impl::bmax)) {
-    //
-    // 2021/06/09 --- Cases for blockSize > 1 need to be modified
-    //
-    switch (blockSize) {
-      default:
-      case 1: {
-#pragma omp parallel for schedule(static)
-        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-          const auto jbeg = A.graph.row_map[iblock];
-          const auto jend = A.graph.row_map[iblock + 1];
-          for (Ordinal j = jbeg; j < jend; ++j) {
-            const auto col_block = A.graph.entries[j];
-            Kokkos::atomic_add(
-                &y[col_block],
-                static_cast<Scalar>(alpha * A.values[j] * x[iblock]));
-          }
-        }
-        break;
-      }
-      case 2: {
-#pragma omp parallel for schedule(static)
-        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-          const auto jbeg       = A_graph.row_map[iblock];
-          const auto jend       = A_graph.row_map[iblock + 1];
-          const auto xval_ptr   = &x[iblock * blockSize];
-          for (Ordinal jb = jbeg; jb < jend; ++jb) {
-            const auto col_block = A.graph.entries[jb];
-            auto yvec            = &y[blockSize * col_block];
-            const auto Aval_ptr  = &A.values[blockSize2 * jb];
-            spmv_transpose_gemv<2>(alpha, Aval_ptr, 2, 2, xval_ptr,
-                                   yvec);
-          }
-        }
-        break;
-      }
-      case 3: {
-#pragma omp parallel for schedule(static)
-        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-          const auto jbeg       = A_graph.row_map[iblock];
-          const auto jend       = A_graph.row_map[iblock + 1];
-          const auto xval_ptr   = &x[iblock * blockSize];
-          for (Ordinal jb = jbeg; jb < jend; ++jb) {
-            const auto col_block = A.graph.entries[jb];
-            auto yvec            = &y[blockSize * col_block];
-            const auto Aval_ptr  = &A.values[blockSize2 * jb];
-            spmv_transpose_gemv<3>(alpha, Aval_ptr, 3, 3, xval_ptr,
-                                   yvec);
-          }
-        }
-        break;
-      }
-      case 4: {
-#pragma omp parallel for schedule(static)
-        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-          const auto jbeg       = A_graph.row_map[iblock];
-          const auto jend       = A_graph.row_map[iblock + 1];
-          const auto xval_ptr   = &x[iblock * blockSize];
-          for (Ordinal jb = jbeg; jb < jend; ++jb) {
-            const auto col_block = A.graph.entries[jb];
-            auto yvec            = &y[blockSize * col_block];
-            const auto Aval_ptr  = &A.values[blockSize2 * jb];
-            spmv_transpose_gemv<4>(alpha, Aval_ptr, 4, 4, xval_ptr,
-                                   yvec);
-          }
-        }
-        break;
-      }
-      case 5: {
-#pragma omp parallel for schedule(static)
-        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-          const auto jbeg       = A_graph.row_map[iblock];
-          const auto jend       = A_graph.row_map[iblock + 1];
-          const auto xval_ptr   = &x[iblock * blockSize];
-          for (Ordinal jb = jbeg; jb < jend; ++jb) {
-            const auto col_block = A.graph.entries[jb];
-            auto yvec            = &y[blockSize * col_block];
-            const auto Aval_ptr  = &A.values[blockSize2 * jb];
-            spmv_transpose_gemv<5>(alpha, Aval_ptr, 5, 5, xval_ptr,
-                                   yvec);
-          }
-        }
-        break;
-      }
-      case 6: {
-#pragma omp parallel for schedule(static)
-        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-          const auto jbeg       = A_graph.row_map[iblock];
-          const auto jend       = A_graph.row_map[iblock + 1];
-          const auto xval_ptr   = &x[iblock * blockSize];
-          for (Ordinal jb = jbeg; jb < jend; ++jb) {
-            const auto col_block = A.graph.entries[jb];
-            auto yvec            = &y[blockSize * col_block];
-            const auto Aval_ptr  = &A.values[blockSize2 * jb];
-            spmv_transpose_gemv<6>(alpha, Aval_ptr, 6, 6, xval_ptr,
-                                   yvec);
-          }
-        }
-        break;
-      }
-      case 7: {
-#pragma omp parallel for schedule(static)
-        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-          const auto jbeg       = A_graph.row_map[iblock];
-          const auto jend       = A_graph.row_map[iblock + 1];
-          const auto xval_ptr   = &x[iblock * blockSize];
-          for (Ordinal jb = jbeg; jb < jend; ++jb) {
-            const auto col_block = A.graph.entries[jb];
-            auto yvec            = &y[blockSize * col_block];
-            const auto Aval_ptr  = &A.values[blockSize2 * jb];
-            spmv_transpose_gemv<7>(alpha, Aval_ptr, 7, 7, xval_ptr,
-                                   yvec);
-          }
-        }
-        break;
-      }
-      case 8: {
-#pragma omp parallel for schedule(static)
-        for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-          const auto jbeg       = A_graph.row_map[iblock];
-          const auto jend       = A_graph.row_map[iblock + 1];
-          const auto xval_ptr   = &x[iblock * blockSize];
-          for (Ordinal jb = jbeg; jb < jend; ++jb) {
-            const auto col_block = A.graph.entries[jb];
-            auto yvec            = &y[blockSize * col_block];
-            const auto Aval_ptr  = &A.values[blockSize2 * jb];
-            spmv_transpose_gemv<8>(alpha, Aval_ptr, 8, 8, xval_ptr,
-                                   yvec);
-          }
-        }
-        break;
-      }
-    }
-  } else {
-#pragma omp parallel for schedule(static)
-    for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
-      const auto jbeg       = A.graph.row_map[iblock];
-      const auto jend       = A.graph.row_map[iblock + 1];
-      const auto xvec       = &x[iblock * blockSize];
-      for (Ordinal jb = jbeg; jb < jend; ++jb) {
-        const auto col_block = A.graph.entries[jb];
-        auto yvec            = &y[blockSize * col_block];
-        const auto Aval_ptr  = &A.values[blockSize2 * jb];
-        for (Ordinal ic = 0; ic < blockSize; ++ic) {
-          const auto xvalue = xvec[ic];
-          for (Ordinal kr = 0; kr < blockSize; ++kr) {
-            Kokkos::atomic_add( &yvec[kr],
-                static_cast<Scalar>(alpha * Aval_ptr[kr + ic * blockSize] * xvalue) );
-          }
-        }
-      }
-    }
+  if ((std::is_same<execution_space, Kokkos::OpenMP>::value) &&
+  (std::is_same<typename std::remove_cv<typename AMatrix_Internal::value_type>::type, double>::value) &&
+  (std::is_same<typename XVector::non_const_value_type, double>::value) &&
+  (std::is_same<typename YVector::non_const_value_type, double>::value) &&
+  ((int)A.graph.row_block_offsets.extent(0) == (int)omp_get_max_threads() + 1) &&
+  (((uintptr_t)(const void *)(x.data()) % 64) == 0) &&
+  (((uintptr_t)(const void *)(y.data()) % 64) == 0) &&
+  (!useConjugate))
+  {
+    bspmv_raw_openmp_transpose<AMatrix_Internal, XVector, YVector>(alpha, A, x, y);
+    return;
   }
-  return;
 #endif
 
-  bool use_dynamic_schedule = false;  // Forces the use of a dynamic schedule
-  bool use_static_schedule  = false;  // Forces the use of a static schedule
-  if (controls.isParameter("schedule")) {
-    if (controls.getParameter("schedule") == "dynamic") {
-      use_dynamic_schedule = true;
-    } else if (controls.getParameter("schedule") == "static") {
-      use_static_schedule = true;
-    }
-  }
+  BSPMV_Transpose_Functor<AMatrix_Internal,XVector,YVector> func (alpha, A_internal, x, y, 1, useConjugate);
+  Kokkos::parallel_for("KokkosSparse::bspmv<Transpose>", Kokkos::RangePolicy<execution_space>(0, A.numRows()),func);
 
 }
 
