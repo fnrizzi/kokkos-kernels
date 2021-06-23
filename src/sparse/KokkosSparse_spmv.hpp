@@ -516,10 +516,8 @@ void spmv(KokkosKernels::Experimental::Controls controls, const char mode[],
 #ifdef KOKKOSKERNELS_ENABLE_TPL_CUSPARSE
   // cuSPARSE does not support the conjugate mode (C), and cuSPARSE 9 only
   // supports the normal (N) mode.
-  if (std::is_same<typename AMatrix_Internal::memory_space,
-                   Kokkos::CudaSpace>::value ||
-      std::is_same<typename AMatrix_Internal::memory_space,
-                   Kokkos::CudaUVMSpace>::value) {
+  if (std::is_same<typename Device::memory_space, Kokkos::CudaSpace>::value ||
+      std::is_same<typename Device::memory_space, Kokkos::CudaUVMSpace>::value) {
 #if (9000 <= CUDA_VERSION)
     useFallback = useFallback || (mode[0] != NoTranspose[0]);
 #endif
@@ -530,8 +528,7 @@ void spmv(KokkosKernels::Experimental::Controls controls, const char mode[],
 #endif
   //
 #ifdef KOKKOSKERNELS_ENABLE_TPL_MKL
-  if (std::is_same<typename AMatrix_Internal::memory_space,
-                   Kokkos::HostSpace>::value) {
+  if (std::is_same<typename Device::memory_space, Kokkos::HostSpace>::value) {
     useFallback = useFallback || (mode[0] == Conjugate[0]);
   }
 #endif
@@ -546,14 +543,14 @@ void spmv(KokkosKernels::Experimental::Controls controls, const char mode[],
     }
   } else {
     if ((mode[0] == KokkosSparse::NoTranspose[0]) || (mode[0] == KokkosSparse::Conjugate[0])) {
-      bool useConjugate = (mode[0] == KokkosSparse::Conjugate[0]);
+      //bool useConjugate = (mode[0] == KokkosSparse::Conjugate[0]);
       std::cerr
           << "\n !!! Sparse Mat - MultiVec product not implemented !!!\n\n";
       //      return Impl::spMatMultiVec_no_transpose(controls, alpha, A, X, beta, Y,
       //      useFallback);
       exit(-11);
     } else if ((mode[0] == KokkosSparse::Transpose[0]) || (mode[0] == KokkosSparse::ConjugateTranspose[0])) {
-      bool useConjugate = (mode[0] == KokkosSparse::ConjugateTranspose[0]);
+      //bool useConjugate = (mode[0] == KokkosSparse::ConjugateTranspose[0]);
       std::cerr
           << "\n !!! Sparse Mat - MultiVec product not implemented !!!\n\n";
       //      return Impl::spMatMultiVec_transpose(controls, alpha, A, X, beta, Y,
