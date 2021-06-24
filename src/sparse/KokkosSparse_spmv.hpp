@@ -53,7 +53,7 @@
 #include "KokkosSparse_spmv_spec.hpp"
 #include "KokkosSparse_spmv_struct_spec.hpp"
 #include <type_traits>
-#include "KokkosSparse_spmv_impl_block_crs.hpp"
+#include "KokkosSparse_spmv_block_impl.hpp"
 #include "KokkosSparse_BlockCrsMatrix.hpp"
 #include "KokkosSparse_CrsMatrix.hpp"
 #include "KokkosBlas1_scal.hpp"
@@ -520,9 +520,6 @@ void spmv(KokkosKernels::Experimental::Controls controls, const char mode[],
       std::is_same<typename Device::memory_space, Kokkos::CudaUVMSpace>::value) {
 #if (9000 <= CUDA_VERSION)
     useFallback = useFallback || (mode[0] != NoTranspose[0]);
-#endif
-#if defined(CUSPARSE_VERSION) && (10300 <= CUSPARSE_VERSION)
-    useFallback = useFallback || (mode[0] == Conjugate[0]);
 #endif
   }
 #endif

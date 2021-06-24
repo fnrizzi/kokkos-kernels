@@ -42,8 +42,8 @@
 //@HEADER
 */
 
-#ifndef KOKKOSKERNELS_KOKKOSSPARSE_SPMV_IMPL_BLOCK_CRS_HPP
-#define KOKKOSKERNELS_KOKKOSSPARSE_SPMV_IMPL_BLOCK_CRS_HPP
+#ifndef KOKKOSKERNELS_KOKKOSSPARSE_SPMV_BLOCK_IMPL_HPP
+#define KOKKOSKERNELS_KOKKOSSPARSE_SPMV_BLOCK_IMPL_HPP
 
 #include "Kokkos_Core.hpp"
 
@@ -449,7 +449,7 @@ void bspmv_raw_openmp_no_transpose(typename YVector::const_value_type& s_a,
 
 
 //
-// spMatVec_no_transpose: version for GPU execution spaces (TeamPolicy used)
+// spMatVec_no_transpose: version for GPU execution spaces
 //
 template < class AT, class AO, class AD, class AM, class AS,
           class AlphaType, class XVector, class BetaType, class YVector,
@@ -464,6 +464,14 @@ void spMatVec_no_transpose(KokkosKernels::Experimental::Controls controls,
   if (A.numRows () <= static_cast<AO> (0)) {
     return;
   }
+
+#ifdef KOKKOSKERNELS_ENABLE_TPL_CUSPARSE
+  if ((!useFallback) && (!useConjugate)) {
+    // Call cuSPARSE
+    spmv_block_cusparse(controls, 'N', alpha, A, x, beta, y);
+    return;
+  }
+#endif
 
   typedef KokkosSparse::Experimental::BlockCrsMatrix<AT, AO, AD,
                                                      Kokkos::MemoryTraits<Kokkos::Unmanaged>, AS> AMatrix_Internal;
@@ -531,8 +539,7 @@ void spMatVec_no_transpose(KokkosKernels::Experimental::Controls controls,
 
 
 //
-// spMatVec_no_transpose: version for CPU execution spaces (RangePolicy or
-// trivial serial impl used)
+// spMatVec_no_transpose: version for CPU execution spaces
 //
 template < class AT, class AO, class AD, class AM, class AS,
         class AlphaType, class XVector, class BetaType, class YVector,
@@ -543,6 +550,18 @@ void spMatVec_no_transpose(KokkosKernels::Experimental::Controls controls,
                            const KokkosSparse::Experimental::BlockCrsMatrix< AT, AO, AD, AM, AS> &A,
                            const XVector &x, const BetaType &beta, YVector &y,
                            bool useFallback, bool useConjugate) {
+
+  if (A.numRows () <= static_cast<AO> (0)) {
+    return;
+  }
+
+#ifdef KOKKOSKERNELS_ENABLE_TPL_MKL
+  if ((!useFallback) && (!useConjugate)) {
+    // Call the MKL version
+    spmv_block_mkl(controls, 'N', alpha, A, x, beta, y);
+    return;
+  }
+#endif
 
   typedef Kokkos::View<
       typename XVector::const_value_type *,
@@ -574,9 +593,6 @@ void spMatVec_no_transpose(KokkosKernels::Experimental::Controls controls,
   XVector_Internal x_i       = x;
   const Ordinal blockSize    = A.blockDim();
   const Ordinal numBlockRows = A.numRows();
-  ////////////
-  assert(useFallback);
-  ////////////
 
   typedef KokkosSparse::Experimental::BlockCrsMatrix<AT, AO, AD,
           Kokkos::MemoryTraits<Kokkos::Unmanaged>, AS> AMatrix_Internal;
@@ -1019,6 +1035,21 @@ void spMatVec_transpose(KokkosKernels::Experimental::Controls controls,
                         bool useFallback, bool useConjugate)
 {
 
+  if (A.numCols () <= static_cast<AO> (0)) {
+    return;
+  }
+
+#ifdef KOKKOSKERNELS_ENABLE_TPL_MKL
+  if ((!useFallback) && (!useConjugate)) {
+    // Call the MKL version
+    if (useConjugate)
+      spmv_block_mkl(controls, 'H', alpha, A, x, beta, y);
+    else
+      spmv_block_mkl(controls, 'T', alpha, A, x, beta, y);
+    return;
+  }
+#endif
+
   typedef Kokkos::View<
       typename XVector::const_value_type *,
       typename KokkosKernels::Impl::GetUnifiedLayout<XVector>::array_layout,
@@ -1131,4 +1162,4 @@ void eti_expand(int val, F f) {
 
 }  // namespace KokkosSparse
 
-#endif  // KOKKOSKERNELS_KOKKOSSPARSE_SPMV_IMPL_BLOCK_CRS_HPP
+#endif  // KOKKOSKERNELS_KOKKOSSPARSE_SPMV_BLOCK_IMPL_HPP
