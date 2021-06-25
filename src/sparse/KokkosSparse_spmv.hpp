@@ -495,6 +495,15 @@ void spmv(KokkosKernels::Experimental::Controls controls, const char mode[],
   //
   Impl::verifyArguments(mode, A, X, Y);
   //
+#ifdef KOKKOS_USE_CUSPARSE
+  if (A.blockDim() == 1) {
+    KokkosSparse::CrsMatrix<ScalarType, OrdinalType, Device, MemoryTraits, SizeType> A1(
+        "crs_convert", A.numCols(), A.values(), A.graph()
+        );
+    spmv(controls, mode, alpha, A1, X, beta, Y);
+    return;
+  }
+#endif // KOKKOS_USE_CUSPARSE
   //
   if (alpha == Kokkos::ArithTraits<AlphaType>::zero() || A.numRows() == 0 ||
       A.numCols() == 0 || A.nnz() == 0) {
