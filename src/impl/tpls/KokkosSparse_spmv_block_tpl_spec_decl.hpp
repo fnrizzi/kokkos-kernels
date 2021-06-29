@@ -195,12 +195,12 @@ inline void spmv_block_impl_mkl(char mode, Kokkos::complex<double> alpha,
 template <typename ScalarType, typename OrdinalType, class Device,
           class MemoryTraits, typename SizeType, class XVector, class YVector>
 void spmv_block_mkl(
-    const Controls&, const char mode[], const ScalarType& alpha,
+    const KokkosKernels::Experimental::Controls &controls, const char mode[], const ScalarType& alpha,
     const KokkosSparse::Experimental::BlockCrsMatrix<
         ScalarType, OrdinalType, Device, MemoryTraits, SizeType>& A,
     const XVector& x, const ScalarType& beta, const YVector& y) {
   std::string label = "KokkosSparse::spmv[BLOCK_TPL_MKL," +
-                      Kokkos::ArithTraits<SCALAR>::name() + "]";
+                      Kokkos::ArithTraits<ScalarType>::name() + "]";
   Kokkos::Profiling::pushRegion(label);
   spmv_block_impl_mkl(mode_kk_to_mkl(mode[0]), alpha, beta, A.numRows(),
                       A.numCols(), A.blockDim(), A.graph.row_map.data(),
@@ -326,13 +326,13 @@ void spmv_block_impl_cusparse(
 template <typename ScalarType, typename OrdinalType, class Space,
           class MemoryTraits, typename SizeType, class XVector, class YVector>
 void spmv_block_cusparse(
-    const Controls&, const char mode[], const ScalarType& alpha,
+    const KokkosKernels::Experimental::Controls &controls, const char mode[], const ScalarType& alpha,
     const KokkosSparse::Experimental::BlockCrsMatrix<
         ScalarType, OrdinalType, Kokkos::Device<Kokkos::Cuda, Space>,
         MemoryTraits, SizeType>& A,
     const XVector& x, const ScalarType& beta, const YVector& y) {
   std::string label = "KokkosSparse::spmv[BLOCK_TPL_CUSPARSE," +
-                      Kokkos::ArithTraits<SCALAR>::name() + "]";
+                      Kokkos::ArithTraits<ScalarType>::name() + "]";
   Kokkos::Profiling::pushRegion(label);
   spmv_block_impl_cusparse(controls, mode, alpha, A, x, beta, y);
   Kokkos::Profiling::popRegion();
