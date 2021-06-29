@@ -58,6 +58,10 @@
 #include "KokkosKernels_Utils.hpp"
 #include "KokkosKernels_ExecSpaceUtils.hpp"
 
+#ifdef KOKKOSKERNELS_ENABLE_TPL_CUSPARSE
+#include "KokkosSparse_spmv_block_tpl_spec_decl.hpp"
+#endif
+
 namespace KokkosSparse {
 namespace Impl {
 
