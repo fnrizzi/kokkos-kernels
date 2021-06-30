@@ -192,12 +192,10 @@ inline void spmv_block_impl_mkl(char mode, Kokkos::complex<double> alpha,
 
 /// \brief Driver for call to MKL routines
 ///
-template <typename ScalarType, typename OrdinalType, class Device,
-          class MemoryTraits, typename SizeType, class XVector, class YVector>
+template <typename ScalarType, class AMatrix, class XVector, class YVector>
 void spmv_block_mkl(
-    const KokkosKernels::Experimental::Controls &controls, const char mode[], const ScalarType& alpha,
-    const KokkosSparse::Experimental::BlockCrsMatrix<
-        ScalarType, OrdinalType, Device, MemoryTraits, SizeType>& A,
+    const KokkosKernels::Experimental::Controls &controls, const char mode[],
+    const ScalarType& alpha, const AMatrix &A,
     const XVector& x, const ScalarType& beta, const YVector& y) {
   std::string label = "KokkosSparse::spmv[BLOCK_TPL_MKL," +
                       Kokkos::ArithTraits<ScalarType>::name() + "]";
@@ -284,7 +282,7 @@ void spmv_block_impl_cusparse(
           cusparseHandle, dirA, myCusparseOperation, A.numRows(), A.numCols(),
           A.nnz(), reinterpret_cast<double const*>(&alpha), descrA,
           reinterpret_cast<double const*>(A.values.data()),
-          A.graph.row_map.data(), A.graph.entries.data(),
+          A.graph.row_map.data(), A.graph.entries.data(), A.blockDim(),
           reinterpret_cast<double const*>(x.data()),
           reinterpret_cast<double const*>(&beta),
           reinterpret_cast<double*>(y.data())));
@@ -323,14 +321,13 @@ void spmv_block_impl_cusparse(
 
 /// \brief Driver for call to cuSparse routines
 ///
-template <typename ScalarType, typename OrdinalType, class Space,
-          class MemoryTraits, typename SizeType, class XVector, class YVector>
+template < class AMatrix, class XVector, class YVector,
+           typename AlphaType, typename BetaType >
 void spmv_block_cusparse(
-    const KokkosKernels::Experimental::Controls &controls, const char mode[], const ScalarType& alpha,
-    const KokkosSparse::Experimental::BlockCrsMatrix<
-        ScalarType, OrdinalType, Kokkos::Device<Kokkos::Cuda, Space>,
-        MemoryTraits, SizeType>& A,
-    const XVector& x, const ScalarType& beta, const YVector& y) {
+    const KokkosKernels::Experimental::Controls &controls, const char mode[],
+    const AlphaType& alpha, const AMatrix &A,
+    const XVector& x, const BetaType& beta, const YVector& y) {
+  using ScalarType = typename YVector::non_const_value_type;
   std::string label = "KokkosSparse::spmv[BLOCK_TPL_CUSPARSE," +
                       Kokkos::ArithTraits<ScalarType>::name() + "]";
   Kokkos::Profiling::pushRegion(label);

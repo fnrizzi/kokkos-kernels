@@ -289,7 +289,6 @@ struct SpMV_SerialNoTranspose {
                         const StaticGraph &Agraph, const Scalar *x,
                         Scalar *y, const Ordinal bs) {
 
-    assert(blockSize == bs);
     const Ordinal numBlockRows = Agraph.numRows();
     std::array<double, Impl::bmax> tmp{0};
     const Ordinal blockSize2 = blockSize * blockSize;
@@ -323,7 +322,6 @@ struct SpMV_SerialNoTranspose<StaticGraph, 1> {
                           const StaticGraph &Agraph, const Scalar *x,
                           Scalar *y, const Ordinal blockSize) {
 
-    assert(1 == blockSize);
     const Ordinal numBlockRows = Agraph.numRows();
     for (Ordinal i = 0; i < numBlockRows; ++i) {
       const auto jbeg = Agraph.row_map[i];
@@ -472,7 +470,7 @@ void spMatVec_no_transpose(KokkosKernels::Experimental::Controls controls,
 #ifdef KOKKOSKERNELS_ENABLE_TPL_CUSPARSE
   if ((!useFallback) && (!useConjugate)) {
     // Call cuSPARSE
-    spmv_block_cusparse(controls, 'N', alpha, A, x, beta, y);
+    spmv_block_cusparse(controls, KokkosSparse::NoTranspose, alpha, A, x, beta, y);
     return;
   }
 #endif
@@ -562,7 +560,7 @@ void spMatVec_no_transpose(KokkosKernels::Experimental::Controls controls,
 #ifdef KOKKOSKERNELS_ENABLE_TPL_MKL
   if ((!useFallback) && (!useConjugate)) {
     // Call the MKL version
-    spmv_block_mkl(controls, 'N', alpha, A, x, beta, y);
+    spmv_block_mkl(controls, KokkosSparse::NoTranspose, alpha, A, x, beta, y);
     return;
   }
 #endif
@@ -951,7 +949,6 @@ struct SpMV_SerialTranspose {
                           const StaticGraph &Agraph, const Scalar *x,
                           Scalar *y, const Ordinal bs) {
 
-    assert(blockSize == bs);
     const Ordinal numBlockRows = Agraph.numRows();
     const auto blockSize2 = blockSize * blockSize;
     for (Ordinal iblock = 0; iblock < numBlockRows; ++iblock) {
@@ -979,7 +976,6 @@ struct SpMV_SerialTranspose<StaticGraph, 1> {
                           const StaticGraph &Agraph, const Scalar *x,
                           Scalar *y, const Ordinal bs) {
 
-    assert(1 == bs);
     const Ordinal numBlockRows = Agraph.numRows();
     for (Ordinal i = 0; i < numBlockRows; ++i) {
       const auto jbeg = Agraph.row_map[i];
@@ -1047,9 +1043,9 @@ void spMatVec_transpose(KokkosKernels::Experimental::Controls controls,
   if ((!useFallback) && (!useConjugate)) {
     // Call the MKL version
     if (useConjugate)
-      spmv_block_mkl(controls, 'H', alpha, A, x, beta, y);
+      spmv_block_mkl(controls, KokkosSparse::ConjugateTranspose, alpha, A, x, beta, y);
     else
-      spmv_block_mkl(controls, 'T', alpha, A, x, beta, y);
+      spmv_block_mkl(controls, KokkosSparse::Transpose, alpha, A, x, beta, y);
     return;
   }
 #endif
@@ -1076,10 +1072,6 @@ void spMatVec_transpose(KokkosKernels::Experimental::Controls controls,
     Kokkos::deep_copy(y_i, Kokkos::ArithTraits<BetaType>::zero());
   else
     KokkosBlas::scal(y_i, beta, y_i);
-
-  ////////////
-  assert(useFallback);
-  ////////////
 
   typedef KokkosSparse::Experimental::BlockCrsMatrix<AT, AO, AD,
           Kokkos::MemoryTraits<Kokkos::Unmanaged>, AS> AMatrix_Internal;
