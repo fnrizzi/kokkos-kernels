@@ -55,19 +55,6 @@ const Scalar SC_ONE  = Kokkos::ArithTraits<Scalar>::one();
 template<typename Scalar=default_scalar>
 const Scalar SC_ZERO = Kokkos::ArithTraits<Scalar>::zero();
 
-inline double abs(Kokkos::complex<double> x) {
-  return Kokkos::abs(x);
-}
-
-inline float abs(Kokkos::complex<float> x) {
-  return Kokkos::abs(x);
-}
-
-template<typename T, typename dummy=void>
-inline T abs(T x) {
-  return std::abs(x);
-}
-
 template<typename Scalar>
 inline Scalar random() {
   auto const max = static_cast<Scalar>(RAND_MAX) + static_cast<Scalar>(1);
@@ -391,8 +378,8 @@ bool compare(const char fOp[], const mtx_t &myMatrix,
       << '\t' << y(ir) << std::endl;
     }
     */
-    error   = std::max<double>(error, abs(yref(ir) - y(ir)));
-    maxNorm = std::max<double>(maxNorm, abs(yref(ir)));
+    error   = std::max<double>(error, Kokkos::ArithTraits<Scalar>::abs(yref(ir) - y(ir)));
+    maxNorm = std::max<double>(maxNorm, Kokkos::ArithTraits<Scalar>::abs(yref(ir)));
   }
   double tol = 2.2e-16 * y.size();
   if (error <= tol * maxNorm)
