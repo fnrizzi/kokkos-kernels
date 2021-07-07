@@ -16,24 +16,30 @@
 #include <set>
 #include <type_traits>
 
-using Scalar  = default_scalar;
 using Ordinal = default_lno_t;
 using Offset  = default_size_type;
 using Layout  = default_layout;
+
+using clock_type = std::chrono::high_resolution_clock;
+using duration_t = std::chrono::duration<double>;
 
 using device_type = typename Kokkos::Device<
     Kokkos::DefaultExecutionSpace,
     typename Kokkos::DefaultExecutionSpace::memory_space>;
 
+template<typename Scalar>
 using crs_matrix_t_ =
     typename KokkosSparse::CrsMatrix<Scalar, Ordinal, device_type, void,
                                      Offset>;
 
-using values_type = typename crs_matrix_t_::values_type;
+template<typename Scalar>
+using values_type = typename crs_matrix_t_<Scalar>::values_type;
 
+template<typename Scalar>
 using bcrs_matrix_t_ = typename KokkosSparse::Experimental::BlockCrsMatrix<
     Scalar, Ordinal, device_type, void, Offset>;
 
+template<typename Scalar>
 using MultiVector_Internal =
     typename Kokkos::View<Scalar **, Layout, device_type>;
 
@@ -43,8 +49,34 @@ namespace details {
 
 namespace test {
 
+template<typename Scalar=default_scalar>
 const Scalar SC_ONE  = Kokkos::ArithTraits<Scalar>::one();
+
+template<typename Scalar=default_scalar>
 const Scalar SC_ZERO = Kokkos::ArithTraits<Scalar>::zero();
+
+template<typename Scalar>
+inline Scalar random() {
+  auto const max = static_cast<Scalar>(RAND_MAX) + static_cast<Scalar>(1);
+  return static_cast<Scalar>(std::rand()) / max;
+}
+
+template<typename Scalar>
+inline void set_random_value(Kokkos::complex<Scalar> &v) {
+  v.real(random<Scalar>());
+  v.imag(random<Scalar>());
+}
+
+template<typename Scalar>
+inline void set_random_value(std::complex<Scalar> &v) {
+  v.real(random<Scalar>());
+  v.imag(random<Scalar>());
+}
+
+template<typename Scalar>
+inline void set_random_value(Scalar &v) {
+  v = random<Scalar>();
+}
 
 /// \brief Generate a CrsMatrix object for a matrix
 /// "with multiple DOFs per node"
@@ -57,15 +89,16 @@ const Scalar SC_ZERO = Kokkos::ArithTraits<Scalar>::zero();
 /// \param mat_colidx
 /// \param mat_val
 /// \return
-template <typename mat_structure>
-crs_matrix_t_ generate_crs_matrix(const std::string stencil,
+template <typename mat_structure, typename Scalar=default_scalar>
+crs_matrix_t_<Scalar> generate_crs_matrix(const std::string stencil,
                                   const mat_structure &structure,
                                   const int blockSize,
                                   std::vector<Ordinal> &mat_rowmap,
                                   std::vector<Ordinal> &mat_colidx,
                                   std::vector<Scalar> &mat_val) {
-  crs_matrix_t_ mat_b1 =
-      Test::generate_structured_matrix2D<crs_matrix_t_>(stencil, structure);
+  using crs_mtx_t = crs_matrix_t_<Scalar>;
+  crs_mtx_t mat_b1 =
+      Test::generate_structured_matrix2D<crs_mtx_t>(stencil, structure);
 
   if (blockSize == 1) return mat_b1;
 
@@ -81,8 +114,7 @@ crs_matrix_t_ generate_crs_matrix(const std::string stencil,
   Scalar *val_ptr = &mat_val[0];
 
   for (size_t ii = 0; ii < nnz; ++ii)
-    val_ptr[ii] =
-        static_cast<Scalar>(std::rand() / (RAND_MAX + static_cast<Scalar>(1)));
+    set_random_value<Scalar>(val_ptr[ii]);
 
   mat_rowmap.resize(nRow + 1);
   int *rowmap = &mat_rowmap[0];
@@ -105,7 +137,7 @@ crs_matrix_t_ generate_crs_matrix(const std::string stencil,
     }
   }  // for (int ir = 0; ir < mat_b1.numRows(); ++ir)
 
-  return crs_matrix_t_("new_crs_matr", nRow, nCol, nnz, val_ptr, rowmap, cols);
+  return crs_mtx_t("new_crs_matr", nRow, nCol, nnz, val_ptr, rowmap, cols);
 }
 
 /// \brief Convert a CrsMatrix object to a BlockCrsMatrix object
@@ -123,10 +155,12 @@ crs_matrix_t_ generate_crs_matrix(const std::string stencil,
 /// ```  BlockCrsMatrix (const KokkosSparse::CrsMatrix<SType, OType, DType,
 /// MTType, IType> &crs_mtx,
 ///                      const OrdinalType blockDimIn) ```
-bcrs_matrix_t_ to_block_crs_matrix(const crs_matrix_t_ &mat_crs,
+template<typename Scalar>
+bcrs_matrix_t_<Scalar> to_block_crs_matrix(const crs_matrix_t_<Scalar> &mat_crs,
                                    const int blockSize) {
+  using bcrs_mtx_t = bcrs_matrix_t_<Scalar>;
   if (blockSize == 1) {
-    bcrs_matrix_t_ bmat(mat_crs, blockSize);
+    bcrs_mtx_t bmat(mat_crs, blockSize);
     return bmat;
   }
 
@@ -182,7 +216,7 @@ bcrs_matrix_t_ to_block_crs_matrix(const crs_matrix_t_ &mat_crs,
   }
 
   Ordinal annz = numBlocks * blockSize * blockSize;
-  bcrs_matrix_t_::values_type vals("values", annz);
+  values_type<Scalar> vals("values", annz);
   for (Ordinal i = 0; i < annz; ++i) vals(i) = 0.0;
 
   for (Ordinal ir = 0; ir < mat_crs.numRows(); ++ir) {
@@ -202,7 +236,7 @@ bcrs_matrix_t_ to_block_crs_matrix(const crs_matrix_t_ &mat_crs,
     }
   }
 
-  bcrs_matrix_t_ bmat("newblock", nbrows, nbcols, annz, vals, rows, cols,
+  bcrs_mtx_t bmat("newblock", nbrows, nbcols, annz, vals, rows, cols,
                       blockSize);
   return bmat;
 }
@@ -216,11 +250,12 @@ bcrs_matrix_t_ to_block_crs_matrix(const crs_matrix_t_ &mat_crs,
 /// \param numRows Number of rows
 /// \param numCols Number of columns
 /// \return Vector
-MultiVector_Internal make_lhs(const int numRows, const int numCols) {
-  MultiVector_Internal X("lhs", numRows, numCols);
+template<typename Scalar>
+MultiVector_Internal<Scalar> make_lhs(const int numRows, const int numCols) {
+  MultiVector_Internal<Scalar> X("lhs", numRows, numCols);
   for (Ordinal ir = 0; ir < numRows; ++ir) {
     for (Ordinal jc = 0; jc < numCols; ++jc) {
-      X(ir, jc) = std::rand() / static_cast<Scalar>(RAND_MAX);
+      set_random_value(X(ir, jc));
     }
   }
   return X;
@@ -230,60 +265,52 @@ MultiVector_Internal make_lhs(const int numRows, const int numCols) {
 ///
 /// \param numRows Number of rows
 /// \return Vector
-typename values_type::non_const_type make_lhs(const int numRows) {
-  typename values_type::non_const_type x("lhs", numRows);
+template<typename Scalar>
+typename values_type<Scalar>::non_const_type make_lhs(const int numRows) {
+  typename values_type<Scalar>::non_const_type x("lhs", numRows);
   for (Ordinal ir = 0; ir < numRows; ++ir)
-    x(ir) = std::rand() / static_cast<Scalar>(RAND_MAX);
+    set_random_value(x(ir));
   return x;
 }
 
-template <typename mtx_t>
-std::chrono::duration<double> measure(const char fOp[], const mtx_t &myMatrix,
+template <typename mtx_t, typename Scalar=typename mtx_t::value_type>
+duration_t measure(const char fOp[], const mtx_t &myMatrix,
                                       const Scalar alpha, const Scalar beta,
                                       const int repeat) {
+  static_assert(std::is_same<Scalar, typename mtx_t::value_type>::value);
+
   const Ordinal numRows = myMatrix.numRows();
 
-  auto const x = make_lhs(numRows);
-  typename values_type::non_const_type y("rhs", numRows);
+  auto const x = make_lhs<Scalar>(numRows);
+  typename values_type<Scalar>::non_const_type y("rhs", numRows);
 
-  std::chrono::duration<double> dt;
-  if (fOp[0] == KokkosSparse::NoTranspose[0]) {
-    auto tBegin = std::chrono::high_resolution_clock::now();
-    for (int ir = 0; ir < repeat; ++ir) {
-      KokkosSparse::spmv("N", alpha, myMatrix, x, beta, y);
-    }
-    auto tEnd = std::chrono::high_resolution_clock::now();
-    dt        = tEnd - tBegin;
-  } else if (fOp[0] == KokkosSparse::Transpose[0]) {
-    auto tBegin = std::chrono::high_resolution_clock::now();
-    for (int ir = 0; ir < repeat; ++ir) {
-      KokkosSparse::spmv("T", alpha, myMatrix, x, beta, y);
-    }
-    auto tEnd = std::chrono::high_resolution_clock::now();
-    dt        = tEnd - tBegin;
+  auto tBegin = clock_type::now();
+  for (int ir = 0; ir < repeat; ++ir) {
+    KokkosSparse::spmv(fOp, alpha, myMatrix, x, beta, y);
   }
+  auto tEnd = clock_type::now();
+  duration_t dt = tEnd - tBegin;
 
   return dt;
 }
 
-template <typename bmtx_t>
-std::chrono::duration<double> measure_block(const char fOp[],
+template <typename bmtx_t, typename Scalar=typename bmtx_t::value_type>
+duration_t measure_block(const char fOp[],
                                             const bmtx_t &myBlockMatrix,
                                             const Scalar alpha,
                                             const Scalar beta,
                                             const int repeat) {
   auto const numRows = myBlockMatrix.numRows() * myBlockMatrix.blockDim();
-  auto const x       = make_lhs(numRows);
-  typename values_type::non_const_type y("rhs", numRows);
+  auto const x       = make_lhs<Scalar>(numRows);
+  typename values_type<Scalar>::non_const_type y("rhs", numRows);
   KokkosKernels::Experimental::Controls controls;
 
-  std::chrono::duration<double> dt;
-  auto tBegin = std::chrono::high_resolution_clock::now();
+  auto tBegin = clock_type::now();
   for (int ir = 0; ir < repeat; ++ir) {
     KokkosSparse::spmv(controls, fOp, alpha, myBlockMatrix, x, beta, y);
   }
-  auto tEnd = std::chrono::high_resolution_clock::now();
-  dt        = tEnd - tBegin;
+  auto tEnd = clock_type::now();
+  duration_t dt = tEnd - tBegin;
 
   return dt;
 }
@@ -315,34 +342,33 @@ std::vector<Ordinal> build_entry_ptr(const mtx_t &myBlockMatrix) {
 /// \param error
 /// \param maxNorm
 /// \return True when the results are numerically identical (false, otherwise)
-template <typename mtx_t, typename bmtx_t>
+template <typename mtx_t, typename bmtx_t, typename Scalar=typename mtx_t::value_type>
 bool compare(const char fOp[], const mtx_t &myMatrix,
              const bmtx_t &myBlockMatrix, const Scalar alpha, const Scalar beta,
              double &error, double &maxNorm) {
+  static_assert(std::is_same<Scalar, typename mtx_t::value_type>::value);
+  static_assert(std::is_same<Scalar, typename bmtx_t::value_type>::value);
   error   = 0.0;
   maxNorm = 0.0;
   //
+  KokkosKernels::Experimental::Controls controls;
   const auto numRows = myMatrix.numRows();
   const auto numCols = myMatrix.numCols();
   Ordinal xrow = 0, yrow = 0;
-  if (fOp[0] == KokkosSparse::NoTranspose[0]) {
+  if (fOp[0] == KokkosSparse::NoTranspose[0]
+   || fOp[0] == KokkosSparse::Conjugate[0]) {
     xrow = static_cast<Ordinal>(numCols);
     yrow = static_cast<Ordinal>(numRows);
-  } else if (fOp[0] == KokkosSparse::Transpose[0]) {
+  } else if (fOp[0] == KokkosSparse::Transpose[0]
+   || fOp[0] == KokkosSparse::ConjugateTranspose[0]) {
     yrow = static_cast<Ordinal>(numCols);
     xrow = static_cast<Ordinal>(numRows);
   }
+  auto const x = make_lhs<Scalar>(xrow);
+  typename values_type<Scalar>::non_const_type y("rhs", yrow);
+  typename values_type<Scalar>::non_const_type yref("ref", yrow);
   //
-  auto const x      = make_lhs(xrow);
-  typename values_type::non_const_type y("rhs", yrow);
-  typename values_type::non_const_type yref("ref", yrow);
-  if (fOp[0] == KokkosSparse::NoTranspose[0]) {
-    KokkosSparse::spmv("N", alpha, myMatrix, x, beta, yref);
-  } else if (fOp[0] == KokkosSparse::Transpose[0]) {
-    KokkosSparse::spmv("T", alpha, myMatrix, x, beta, yref);
-  }
-  //
-  KokkosKernels::Experimental::Controls controls;
+  KokkosSparse::spmv(controls, fOp, alpha, myMatrix, x, beta, yref);
   KokkosSparse::spmv(controls, fOp, alpha, myBlockMatrix, x, beta, y);
   //
   for (Ordinal ir = 0; ir < yrow; ++ir) {
@@ -352,8 +378,8 @@ bool compare(const char fOp[], const mtx_t &myMatrix,
       << '\t' << y(ir) << std::endl;
     }
     */
-    error   = std::max<double>(error, std::abs(yref(ir) - y(ir)));
-    maxNorm = std::max<double>(maxNorm, std::abs(yref(ir)));
+    error   = std::max<double>(error, Kokkos::ArithTraits<Scalar>::abs(yref(ir) - y(ir)));
+    maxNorm = std::max<double>(maxNorm, Kokkos::ArithTraits<Scalar>::abs(yref(ir)));
   }
   double tol = 2.2e-16 * y.size();
   if (error <= tol * maxNorm)
@@ -362,58 +388,83 @@ bool compare(const char fOp[], const mtx_t &myMatrix,
     return false;
 }
 
-template<typename mtx_t = crs_matrix_t_, typename bmtx_t = bcrs_matrix_t_>
-class TestCase {
-public:
-  using time_t = std::chrono::duration<double>;
+struct RunInfo {
+  using Scalar = default_scalar; // TODO: test with complex alpha/beta ?
 
-  struct RunInfo {
-    // options
-    const char *mode = "N"; // N/T/C/H
-    const Scalar alpha = SC_ONE;
-    const Scalar beta = SC_ZERO;
-    // results
-    double error = 0.0;
-    double maxNorm = 0.0;
-    time_t dt_crs;
-    time_t dt_bcrs;
-  };
+  // options
+  const char *mode = "N"; // N/T/C/H
+  const Scalar alpha = SC_ONE<Scalar>;
+  const Scalar beta = SC_ZERO<Scalar>;
+  // results
+  double error = 0.0;
+  double maxNorm = 0.0;
+  duration_t dt_crs;
+  duration_t dt_bcrs;
+};
 
+using Variants = std::vector<RunInfo>;
+
+template<typename Output>
+class TestRunner {
 public:
-  TestCase(std::string name, crs_matrix_t_ myMatrix,
-           const int blockSize, const int repeat = 1024):
-    name_(name),
-    myMatrix_(std::move(myMatrix)),
-    blockSize_(blockSize),
-    repeat_(repeat)
+  TestRunner(Output &out_):
+    out(out_)
   {
-    myBlockMatrix_ = to_block_crs_matrix(myMatrix_, blockSize_); // Use BlockCrsMatrix format
   }
 
   //
   // Assess y <- A * x
   //
-  bool execute(RunInfo &run)
+  template<
+    typename mtx_t = crs_matrix_t_<default_scalar>,
+    typename bmtx_t = bcrs_matrix_t_<default_scalar>,
+    typename Scalar = typename mtx_t::value_type
+    >
+  void operator()(const std::string &name, mtx_t myMatrix, Variants &variants,
+                  const int blockSize, const int repeat = 1024)
   {
-    bool correct = compare(run.mode, myMatrix_, myBlockMatrix_, run.alpha, run.beta, run.error, run.maxNorm);
-    if (correct) {
-      run.dt_crs = measure(run.mode, myMatrix_, run.alpha, run.beta, repeat_);
-      run.dt_bcrs = measure_block(run.mode, myBlockMatrix_, run.alpha, run.beta, repeat_);
-    }
-    return correct;
+    ++sample_id;
+    int variant_id = 0;
+    auto myBlockMatrix = to_block_crs_matrix(myMatrix, blockSize); // Use BlockCrsMatrix format
+
+    std::for_each(variants.begin(), variants.end(), [&](test::RunInfo &run) {
+
+      if (!Kokkos::ArithTraits<Scalar>::is_complex &&
+        (run.mode[0] == KokkosSparse::Conjugate[0] || run.mode[0] == KokkosSparse::ConjugateTranspose[0]))
+        return; // test Conjugate/Hermitian only on complex samples
+
+      Scalar alpha = run.alpha; // Note: convert to Scalar
+      Scalar beta = run.beta;
+      ++variant_id;
+      auto const label = name + ":" + std::to_string(variant_id);
+      out.showRunInfo(label, myMatrix, blockSize, run, label, 1 != variant_id);
+
+      bool correct = compare(run.mode, myMatrix, myBlockMatrix, alpha, beta, run.error, run.maxNorm);
+      if (correct) {
+        run.dt_crs = measure(run.mode, myMatrix, alpha, beta, repeat);
+        run.dt_bcrs = measure_block(run.mode, myBlockMatrix, alpha, beta, repeat);
+      }
+
+      out.showRunResults(myMatrix, repeat, run, correct);
+      pass = pass && correct;
+    });
   }
 
-// private:
-  mtx_t myMatrix_;
-  bmtx_t myBlockMatrix_; // derived
-  int blockSize_;
-  int repeat_;
-  std::string name_;
+  bool all_passed() {
+    return pass;
+  }
+
+private:
+  Output &out;
+  int sample_id = 0;
+  bool pass = true;
 };
 
-template<typename test_t>
-void test_random(std::vector<test_t> &samples, const int repeat = 1024,
-                 const int minBlockSize = 1, const int maxBlockSize = 10) {
+template<typename Scalar = default_scalar, typename Executor> // =default_scalar
+void test_random_samples(Executor &test_matrix, Variants &variants,
+                 const int repeat = 1024,
+                 const int minBlockSize = 1, const int maxBlockSize = 10)
+{
 
   // The mat_structure view is used to generate a matrix using
   // finite difference (FD) or finite element (FE) discretization
@@ -435,20 +486,24 @@ void test_random(std::vector<test_t> &samples, const int repeat = 1024,
 
   for (int blockSize = minBlockSize; blockSize <= maxBlockSize; ++blockSize) {
     std::vector<int> mat_rowmap, mat_colidx;
-    std::vector<double> mat_val;
-
-    samples.push_back({
-      "rand-" + std::to_string(blockSize),
-      generate_crs_matrix(
-        "FD", mat_structure, blockSize, mat_rowmap, mat_colidx, mat_val),
+    std::vector<Scalar> mat_val;
+    auto const label = std::string("rand-") + (Kokkos::ArithTraits<Scalar>::is_complex ? "complex-" : "real-") + std::to_string(blockSize);
+    auto myMatrix = generate_crs_matrix(
+        "FD", mat_structure, blockSize, mat_rowmap, mat_colidx, mat_val);
+    test_matrix(
+      label,
+      myMatrix,
+      variants,
       blockSize,
       repeat
-    });
+    );
   }
 }
 
-template<typename test_t>
-void test_samples(std::vector<test_t> &samples, const int repeat = 3000) {
+template<typename Executor>
+void test_market_samples(Executor test_matrix, Variants &variants, const int repeat = 3000)
+{
+  using mtx_t = crs_matrix_t_<default_scalar>;
 
   const std::vector<std::tuple<const char *, int> > SAMPLES{
       // std::tuple(char* fileName, int blockSize)
@@ -487,12 +542,14 @@ void test_samples(std::vector<test_t> &samples, const int repeat = 3000) {
   // Loop over sample matrix files
   std::for_each(SAMPLES.begin(), SAMPLES.end(), [&](auto const &sample) {
     const char *fileName = std::get<0>(sample);
-    samples.push_back({
+    auto const myMatrix = KokkosKernels::Impl::read_kokkos_crst_matrix<mtx_t>(fileName);
+    test_matrix(
       std::string(fileName),
-      KokkosKernels::Impl::read_kokkos_crst_matrix<crs_matrix_t_>(fileName),
+      myMatrix,
+      variants,
       std::get<1>(sample),
       repeat
-    });
+    );
   });
 }
 
@@ -513,37 +570,48 @@ class CSVOutput
               << std::endl;
   }
 
-  template <typename Test, typename RunInfo, typename id_t>
-  void showRunInfo(Test &test, RunInfo &run, id_t sample_id, bool skipSample = false) {
+
+  template<typename mtx_t>
+  void showRunInfo(const std::string &name, const mtx_t &myMatrix, int blockSize,
+                   const test::RunInfo &run, const std::string &sample_id, bool skipSample = false)
+  {
     std::cout << sample_id << sep;
     if (skipSample)
       std::cout << sep << "^" << sep << "^" << sep << "^" << sep << "^";
     else
-      std::cout << sep << test.name_ << sep << test.myMatrix_.numRows()
-                << sep << test.blockSize_ << sep << test.myMatrix_.nnz();
+      std::cout << sep << name << sep << myMatrix.numRows()
+                << sep << blockSize << sep << myMatrix.nnz();
     std::cout << sep << run.mode << sep << run.alpha << sep << run.beta;
   }
 
-  template <typename Test, typename RunInfo>
-  void showRunResults(Test &test, RunInfo &run) {
+  template<typename mtx_t>
+  void showRunResults(const mtx_t &myMatrix, int repeat, const test::RunInfo &run, bool pass)
+  {
     std::cout << sep << run.error << sep << run.maxNorm;
-    auto const nnz = test.myMatrix_.nnz();
+    if (!pass) {
+      for (int i = 0; i < 7; ++i) {
+        std::cout << sep << "--";
+      }
+      std::cout << sep << "FAILED!" << std::endl;
+      return;
+    }
+    auto const nnz = myMatrix.nnz();
     Ordinal flops = 0;
     //
     // This flop count would not work when the matrix is not square
     //
     if ((run.alpha == 0) && (run.beta != 0)) {
-      flops = test.myMatrix_.numRows();
+      flops = myMatrix.numRows();
     }
     else if ((run.alpha != 0) && (run.beta == 0)) {
       flops = nnz;
     }
     else if ((run.alpha != 0) && (run.beta != 0)) {
-      flops = nnz + test.myMatrix_.numRows();
+      flops = nnz + myMatrix.numRows();
     }
     //
-    showTime(run.dt_crs, flops, test.repeat_);
-    showTime(run.dt_bcrs, flops, test.repeat_);
+    showTime(run.dt_crs, flops, repeat);
+    showTime(run.dt_bcrs, flops, repeat);
     auto const remarks = (run.dt_bcrs.count() < run.dt_crs.count()) ? "good" : "NOT_faster";
     std::cout << sep << (run.dt_bcrs.count() / run.dt_crs.count()) << sep << remarks;
     std::cout << std::endl;
@@ -558,45 +626,58 @@ private:
   }
 };
 
+void set_variants(test::Variants &variants) {
+  variants.push_back({KokkosSparse::NoTranspose});
+  variants.push_back({KokkosSparse::Transpose});
+  variants.push_back({KokkosSparse::Conjugate});
+  variants.push_back({KokkosSparse::ConjugateTranspose});
+  variants.push_back({KokkosSparse::NoTranspose, -1, -1.0});
+  variants.push_back({KokkosSparse::NoTranspose, 3.14159, 0.25});
+  variants.push_back({KokkosSparse::NoTranspose, 0.0, 0.0});
+  variants.push_back({KokkosSparse::NoTranspose, 0.0, 1.0});
+}
+
+using Output     = CSVOutput;
+using TestRunner = test::TestRunner<Output>;
+
 int main() {
   Kokkos::initialize();
   bool failed = false;
   srand(17312837);
-
   {
-    // Prepare samples
-    using test_t = test::TestCase<crs_matrix_t_, bcrs_matrix_t_>;
-    std::vector<test_t> samples;
-    test::test_random(samples);
-    test::test_samples(samples);
-
-    // Prepare variants
-    std::vector<test_t::RunInfo> variants;
-    variants.push_back({"N"});
-    variants.push_back({"T"});
-    variants.push_back({"N", -1, -1.0});
-    variants.push_back({"T", 3.14159, 0.25});
-    variants.push_back({"N", 0.0, 0.0});
-    variants.push_back({"N", 0.0, 1.0});
-
-    // Run samples
-    int sample_id = 0;
-    CSVOutput out;
+    const int repeat = 1024;
+    test::Variants variants;
+    set_variants(variants);
+    Output out;
+    TestRunner runner(out);
     out.showHeader();
-    std::for_each(samples.begin(), samples.end(), [&](test_t &test) {
-      sample_id += 1;
-      int variant_id = 0;
-      std::for_each(variants.begin(), variants.end(), [&](test_t::RunInfo &run) {
-        ++variant_id;
-        auto const label = std::to_string(sample_id)
-                           + ":" + std::to_string(variant_id)
-                           + "/" + std::to_string(samples.size());
-        out.showRunInfo(test, run, label, 1 != variant_id);
-        bool pass = test.execute(run);
-        failed = failed || !pass;
-        out.showRunResults(test, run);
-      });
-    });
+    auto tBegin = clock_type::now();
+    // Run samples
+
+    // cover small blocks - including optimized implementations for blockSize=1
+    test::test_random_samples(runner, variants, repeat, 1, 3);
+
+    // test complex on small blocks
+    test::test_random_samples<Kokkos::complex<default_scalar> >(runner, variants, repeat, 1, 1);
+    test::test_random_samples<Kokkos::complex<default_scalar> >(runner, variants, repeat,
+                              KokkosSparse::Impl::bmax - 1, KokkosSparse::Impl::bmax - 1);
+    test::test_random_samples<Kokkos::complex<default_scalar> >(runner, variants, repeat,
+                              KokkosSparse::Impl::bmax + 1, KokkosSparse::Impl::bmax + 1);
+    // FIXME: does not work with Kokkos::atomic_add(...) in our implementation
+    // test::test_random_samples<std::complex<default_scalar> >(runner, variants, repeat, 3, 3);
+
+    // cover ETI-expanded (small blocks) and dynamic (large blocks) implementations
+    test::test_random_samples(runner, variants, repeat,
+                              KokkosSparse::Impl::bmax - 2, KokkosSparse::Impl::bmax + 1);
+
+    // Test MM samples
+    test::test_market_samples(runner, variants, repeat);
+
+    auto tEnd = clock_type::now();
+    if (runner.all_passed())
+      std::cout << "Finished in " << (tEnd - tBegin).count() << " s: All tests PASSED" << std::endl;
+    else
+      std::cout << "Finished in " << (tEnd - tBegin).count() << " s: FAILED" << std::endl;
   }
 
   Kokkos::finalize();
