@@ -663,8 +663,7 @@ int main() {
                               KokkosSparse::Impl::bmax - 1, KokkosSparse::Impl::bmax - 1);
     test::test_random_samples<Kokkos::complex<default_scalar> >(runner, variants, repeat,
                               KokkosSparse::Impl::bmax + 1, KokkosSparse::Impl::bmax + 1);
-    // FIXME: does not work with Kokkos::atomic_add(...) in our implementation
-    // test::test_random_samples<std::complex<default_scalar> >(runner, variants, repeat, 3, 3);
+    test::test_random_samples<std::complex<default_scalar> >(runner, variants, repeat, 3, 3);
 
     // cover ETI-expanded (small blocks) and dynamic (large blocks) implementations
     test::test_random_samples(runner, variants, repeat,
