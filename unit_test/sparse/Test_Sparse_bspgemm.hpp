@@ -52,6 +52,7 @@
 // #include <string>
 // #include <stdexcept>
 
+#include "KokkosSparse_spgemm.hpp"
 #include "KokkosSparse_bspgemm_numeric.hpp"
 #include "KokkosSparse_BsrMatrix.hpp"
 
@@ -372,34 +373,29 @@ void test_bspgemm(lno_t numRows, size_type nnz, lno_t bandwidth, lno_t row_size_
   // Kokkos::print_configuration(std::cout, false);
   // device::execution_space::print_configuration(std::cout);
 
+  using bsrMat_t = KokkosSparse::Experimental::BsrMatrix<scalar_t, lno_t, device, void, size_type>;
+
 #if 1
-  using blkcrsMat_t = KokkosSparse::Experimental::BsrMatrix<scalar_t, lno_t, device, void, size_type>;
-
-  blkcrsMat_t A, B, refC;
+  bsrMat_t A, B, refC;
   generate_sample(A, B, refC);
-  //std::cout << "A = \n" << A << "\n";
-  //std::cout << "B = \n" << B << "\n";
-
-  blkcrsMat_t C;
-  run_bspgemm(A, B, SPGEMM_DEBUG, C);
-  // std::cout << "C = \n" << C << "\n";
-
-  EXPECT_TRUE(is_same_block_matrix(C, refC)) << "Block SpMM: Serial/Debug";
-
-  return;
-#endif
-/* // TODO:
+  std::cout << "A = \n" << A << "\n";
+  std::cout << "B = \n" << B << "\n";
+#else // TODO: generate large random BLOCK matrix
   typedef CrsMatrix<scalar_t, lno_t, device, void, size_type> crsMat_t;
 
   lno_t numCols = numRows;
   // Generate random compressed sparse row matrix. Randomly generated (non-zero) values are
   // stored in a 1-D (1 rank) array.
   crsMat_t input_mat = KokkosKernels::Impl::kk_generate_sparse_matrix<crsMat_t>(numRows,numCols,nnz,row_size_variance, bandwidth);
+#endif
 
-  crsMat_t output_mat2;
-  run_spgemm<crsMat_t, device>(input_mat, input_mat, SPGEMM_DEBUG, output_mat2);
+  bsrMat_t output_mat2;
 
-  std::vector<SPGEMMAlgorithm> algorithms = {SPGEMM_KK_MEMORY, SPGEMM_KK_SPEED, SPGEMM_KK_MEMSPEED};
+  run_bspgemm(A, B, SPGEMM_DEBUG, output_mat2);
+  std::cout << "C = \n" << output_mat2 << "\n";
+  EXPECT_TRUE(is_same_block_matrix(output_mat2, refC)) << "Block SpMM: Serial/Debug";
+
+  std::vector<SPGEMMAlgorithm> algorithms = {SPGEMM_KK_MEMORY, /* SPGEMM_KK_SPEED,*/ SPGEMM_KK_MEMSPEED};
 
 #ifdef HAVE_KOKKOSKERNELS_MKL
   algorithms.push_back(SPGEMM_MKL);
@@ -414,6 +410,7 @@ void test_bspgemm(lno_t numRows, size_type nnz, lno_t bandwidth, lno_t row_size_
     bool is_expected_to_fail = false;
 
     switch (spgemm_algorithm){
+#if 0
     case SPGEMM_CUSPARSE:
       //TODO: add these test failure cases for cusparse too.
       algo = "SPGEMM_CUSPARSE";
@@ -434,7 +431,7 @@ void test_bspgemm(lno_t numRows, size_type nnz, lno_t bandwidth, lno_t row_size_
       }
       //if size_type is larger than int, mkl casts it to int.
       //it will fail if casting cause overflow.
-      if (input_mat.values.extent(0) > max_integer){
+      if (A.values.extent(0) > max_integer){
         is_expected_to_fail = true;
       }
 
@@ -442,13 +439,15 @@ void test_bspgemm(lno_t numRows, size_type nnz, lno_t bandwidth, lno_t row_size_
         is_expected_to_fail = true;
       }
       break;
-
+#endif
     case SPGEMM_KK_MEMSPEED:
       algo = "SPGEMM_KK_MEMSPEED";
       break;
+#if 0 // TODO: implement SPEED
     case SPGEMM_KK_SPEED:
-      algo = "SPGEMM_KK_SPEED";
-      break;
+       algo = "SPGEMM_KK_SPEED";
+       break;
+#endif
     case SPGEMM_KK_MEMORY:
       algo = "SPGEMM_KK_MEMORY";
       break;
@@ -456,13 +455,13 @@ void test_bspgemm(lno_t numRows, size_type nnz, lno_t bandwidth, lno_t row_size_
       algo = "!!! UNKNOWN ALGO !!!";
     }
 
-    Kokkos::Impl::Timer timer1;
-    crsMat_t output_mat;
+    Kokkos::Timer timer1;
+    bsrMat_t output_mat;
 
     bool failed = false;
     int res = 0;
     try{
-    	res = run_spgemm<crsMat_t, device>(input_mat, input_mat, spgemm_algorithm, output_mat);
+    	res = run_bspgemm(A, B, spgemm_algorithm, output_mat);
     }
     catch (const char *message){
       EXPECT_TRUE(is_expected_to_fail) << algo;
@@ -484,12 +483,11 @@ void test_bspgemm(lno_t numRows, size_type nnz, lno_t bandwidth, lno_t row_size_
     if (!is_expected_to_fail){
 
       EXPECT_TRUE( (res == 0)) << algo;
-      bool is_identical = is_same_matrix<crsMat_t, device>(output_mat, output_mat2);
+      bool is_identical = is_same_block_matrix(output_mat, output_mat2);
       EXPECT_TRUE(is_identical) << algo;
     }
     std::cout << "algo:" << algo << " spgemm_time:" << spgemm_time << " output_check_time:" << timer1.seconds() << std::endl;
   }
-*/
 }
 
 // template <typename scalar_t, typename lno_t, typename size_type, typename device>

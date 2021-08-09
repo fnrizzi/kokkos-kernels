@@ -53,7 +53,7 @@
  #include "KokkosSparse_bspgemm_impl_seq.hpp"
 // #include "KokkosSparse_bspgemm_cuSPARSE_impl.hpp"
 // #include "KokkosSparse_bspgemm_CUSP_impl.hpp"
-// #include "KokkosSparse_bspgemm_impl.hpp"
+#include "KokkosSparse_bspgemm_impl.hpp"
 // #include "KokkosSparse_bspgemm_mkl_impl.hpp"
 // #include "KokkosSparse_bspgemm_mkl2phase_impl.hpp"
 // #include "KokkosSparse_bspgemm_viennaCL_impl.hpp"
@@ -302,15 +302,14 @@ struct BSPGEMM_NUMERIC<KernelHandle,
     default:
 
     {
-
-      throw std::runtime_error("TODO: implement KokkosBSPGEMM::KokkosBSPGEMM_numeric()");
-
-      // KokkosBSPGEMM
-      // <KernelHandle,
-      // a_size_view_t_, a_lno_view_t, a_scalar_view_t,
-      // b_size_view_t_, b_lno_view_t,  b_scalar_view_t>
-      // kbspgemm (handle,m,n,k,row_mapA, entriesA, valuesA, transposeA, row_mapB, entriesB, valuesB, transposeB);
-      // kbspgemm.KokkosBSPGEMM_numeric(row_mapC, entriesC, valuesC);
+      KokkosBSPGEMM
+      <KernelHandle,
+      a_size_view_t_, a_lno_view_t, a_scalar_view_t,
+      b_size_view_t_, b_lno_view_t,  b_scalar_view_t>
+      kbspgemm (handle, m, n, k, blockDim,
+        row_mapA, entriesA, valuesA, transposeA,
+        row_mapB, entriesB, valuesB, transposeB);
+      kbspgemm.KokkosBSPGEMM_numeric(row_mapC, entriesC, valuesC);
     }
     break;
     case SPGEMM_SERIAL:

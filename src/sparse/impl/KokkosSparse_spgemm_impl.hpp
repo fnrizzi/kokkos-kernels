@@ -242,7 +242,7 @@ public:
   typedef Kokkos::TeamPolicy<MyExecSpace, Kokkos::Schedule<Kokkos::Dynamic> > dynamic_team_policy_t ;
 
 
-private:
+protected:
   HandleType *handle;
   nnz_lno_t a_row_cnt;
   nnz_lno_t b_row_cnt;
@@ -781,7 +781,7 @@ public:
 				     typename c_scalar_nnz_view_t::const_value_type omega, dinv_view_t dinv, 
 				     KokkosKernels::Impl::ExecSpaceType lcl_my_exec_space);
 
-private:
+protected:
   template <typename c_row_view_t, typename c_lno_nnz_view_t, typename c_scalar_nnz_view_t, typename dinv_view_t>
   void KokkosSPGEMM_jacobi_denseacc(c_row_view_t rowmapC_, c_lno_nnz_view_t entriesC_, c_scalar_nnz_view_t valuesC_,
 				    typename c_scalar_nnz_view_t::const_value_type omega, dinv_view_t dinv,
