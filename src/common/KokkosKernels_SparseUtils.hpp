@@ -51,6 +51,7 @@
 #include "KokkosKernels_ExecSpaceUtils.hpp"
 #include <vector>
 #include "KokkosKernels_PrintUtils.hpp"
+#include "KokkosKernels_BlockUtils.hpp"
 
 #ifdef KOKKOSKERNELS_HAVE_PARALLEL_GNUSORT
 #include <parallel/algorithm>
